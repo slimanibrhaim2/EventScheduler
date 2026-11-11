@@ -4,6 +4,9 @@ const express = require("express");
 const cors = require("cors");
 const { migrate } = require("./db");
 const { startScheduler } = require("./scheduler");
+const { initFirebaseAdmin } = require("./authFirebase");
+const { requireAuth, requireApproved } = require("./middleware/auth");
+const auth = require("./routes/auth");
 const jobs = require("./routes/jobs");
 const proxies = require("./routes/proxies");
 const runs = require("./routes/runs");
@@ -16,7 +19,7 @@ app.use(cors({ origin: "http://localhost:5173" }));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, firebase: initFirebaseAdmin() });
 });
 
 function asyncRouter(router) {
@@ -31,12 +34,15 @@ function asyncRouter(router) {
   return router;
 }
 
-app.use("/api/jobs", asyncRouter(jobs));
-app.use("/api/proxies", asyncRouter(proxies));
-app.use("/api/runs", asyncRouter(runs));
-app.use("/api/games", asyncRouter(games));
-app.use("/api/plans", asyncRouter(plans));
-app.use("/api/settings", asyncRouter(settings));
+const protect = [requireAuth, requireApproved];
+
+app.use("/api/auth", asyncRouter(auth));
+app.use("/api/jobs", ...protect, asyncRouter(jobs));
+app.use("/api/proxies", ...protect, asyncRouter(proxies));
+app.use("/api/runs", ...protect, asyncRouter(runs));
+app.use("/api/games", ...protect, asyncRouter(games));
+app.use("/api/plans", ...protect, asyncRouter(plans));
+app.use("/api/settings", ...protect, asyncRouter(settings));
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -47,6 +53,7 @@ const port = Number(process.env.PORT || 4000);
 
 migrate()
   .then(() => {
+    initFirebaseAdmin();
     app.listen(port, () => {
       console.log(`api listening on http://localhost:${port}`);
       startScheduler();

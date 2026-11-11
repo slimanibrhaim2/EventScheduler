@@ -11,6 +11,9 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { api } from "./api";
+import { useAuth } from "./auth";
+import { AuthLoadingScreen, LoginScreen, PendingScreen } from "./AuthScreens";
+import UsersPage from "./UsersPage";
 import {
   FLEET_COUNTRIES,
   FLEET_COMMON_ISPS,
@@ -108,6 +111,7 @@ const NAV = [
   { to: "/proxies", label: "Proxies" },
   { to: "/history", label: "History" },
   { to: "/settings", label: "Settings" },
+  { to: "/users", label: "Users", adminOnly: true },
 ];
 
 function batchNameFromFile(fileName) {
@@ -233,6 +237,7 @@ function applyTimeSpent(selected, orderedVariableIds, dailyBudget = 30000) {
 }
 
 export default function App() {
+  const { loading, firebaseUser, isApproved, isAdmin, appUser, logout } = useAuth();
   const location = useLocation();
   const [jobs, setJobs] = useState([]);
   const [proxies, setProxies] = useState([]);
@@ -273,8 +278,10 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    if (!isApproved) return undefined;
     load().catch((err) => setError(err.message));
-  }, []);
+    return undefined;
+  }, [isApproved]);
 
   const toggleTheme = (event) => {
     const next = theme === "dark" ? "light" : "dark";
@@ -293,20 +300,44 @@ export default function App() {
 
   // Keep jobs/status fresh without a full page reload.
   useEffect(() => {
+    if (!isApproved) return undefined;
     const tick = () => {
       if (document.visibilityState === "hidden") return;
       load().catch(() => {});
     };
     const id = window.setInterval(tick, 5000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [isApproved]);
 
   useEffect(() => {
     setError("");
     setMessage("");
   }, [location.pathname]);
 
+  if (loading) return <AuthLoadingScreen />;
+  if (!firebaseUser) return <LoginScreen />;
+  if (!appUser) {
+    return (
+      <div className="auth-screen">
+        <div className="auth-card">
+          <h2>Account sync failed</h2>
+          <p className="error">Could not verify your account with the server.</p>
+          <p className="sub">
+            Make sure the API is running with Firebase Admin configured, then sign in again.
+          </p>
+          <div className="actions">
+            <button type="button" className="btn btn-danger" onClick={() => logout()}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (!isApproved) return <PendingScreen />;
+
   const flash = { setError, setMessage };
+  const navItems = NAV.filter((item) => !item.adminOnly || isAdmin);
 
   return (
     <div className="app-shell">
@@ -320,7 +351,7 @@ export default function App() {
           </div>
         </Link>
         <nav className="topnav">
-          {NAV.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -348,6 +379,15 @@ export default function App() {
           >
             Refresh
           </button>
+          <div className="user-chip" title={appUser?.email || ""}>
+            <div className="user-chip-text">
+              <strong>{appUser?.display_name || "Account"}</strong>
+              <span className="sub">{appUser?.email}</span>
+            </div>
+            <button type="button" className="btn" onClick={() => logout()}>
+              Sign out
+            </button>
+          </div>
         </nav>
       </header>
 
@@ -412,6 +452,7 @@ export default function App() {
             path="/settings"
             element={<SettingsPage settings={settings} onRefresh={load} {...flash} />}
           />
+          <Route path="/users" element={<UsersPage {...flash} />} />
           <Route path="*" element={<Navigate to="/games" replace />} />
         </Routes>
       </main>
@@ -1049,6 +1090,7 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
 }
 
 function SettingsPage({ settings, onRefresh, setError, setMessage }) {
+  const { appUser, logout, isAdmin } = useAuth();
   const [form, setForm] = useState(settings);
   const [pasteLine, setPasteLine] = useState("");
   const [showPass, setShowPass] = useState(false);
@@ -1124,6 +1166,22 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
         <div>
           <h2>Settings</h2>
           <p className="sub">Plan timing, noise, and FleetProxy credentials used for every account.</p>
+        </div>
+      </div>
+      <div className="panel-body settings-account">
+        <h3 className="settings-section-title">Account</h3>
+        <div className="settings-account-row">
+          <div>
+            <div className="sub">Signed in as</div>
+            <strong>{appUser?.email || "—"}</strong>
+            <div className="sub">
+              {appUser?.display_name ? `${appUser.display_name} · ` : ""}
+              {isAdmin ? "admin" : "user"} · {appUser?.status || "—"}
+            </div>
+          </div>
+          <button type="button" className="btn btn-danger" onClick={() => logout()}>
+            Sign out
+          </button>
         </div>
       </div>
       <form className="panel-body" onSubmit={save}>

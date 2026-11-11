@@ -1,17 +1,37 @@
+let authToken = null;
+
+export function setAuthToken(token) {
+  authToken = token || null;
+}
+
 async function request(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    headers,
   });
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.code = data.code;
+    err.user = data.user;
+    throw err;
   }
   return data;
 }
 
 export const api = {
+  me: () => request("/api/auth/me"),
+  users: () => request("/api/auth/users"),
+  updateUser: (id, body) =>
+    request(`/api/auth/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   jobs: () => request("/api/jobs"),
   createJob: (body) => request("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
   createJobsFromPlan: (body) =>

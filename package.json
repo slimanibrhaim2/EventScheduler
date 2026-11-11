@@ -6,5 +6,8 @@
   "scripts": {
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client"
+  },
+  "dependencies": {
+    "firebase": "^13.2.0"
   }
 }

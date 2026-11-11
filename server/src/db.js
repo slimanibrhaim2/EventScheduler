@@ -33,6 +33,20 @@ async function migrate() {
     ALTER TABLE jobs ADD COLUMN IF NOT EXISTS batch_id TEXT;
     ALTER TABLE jobs ADD COLUMN IF NOT EXISTS request_kind TEXT;
 
+    CREATE TABLE IF NOT EXISTS app_users (
+      id SERIAL PRIMARY KEY,
+      uid TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL,
+      display_name TEXT,
+      photo_url TEXT,
+      role TEXT NOT NULL DEFAULT 'user',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_login_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS app_users_status_idx ON app_users (status);
+    CREATE INDEX IF NOT EXISTS app_users_email_idx ON app_users (email);
+
     INSERT INTO settings (key, value)
     VALUES
       ('daily_time_spent', '30000'),
