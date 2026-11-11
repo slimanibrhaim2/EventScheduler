@@ -9,6 +9,7 @@ const {
   addTimeSpentNoise,
 } = require("../applyTemplate");
 const { executeJob } = require("../scheduler");
+const { createFleetProxyForAccount } = require("../fleetProxy");
 
 const router = express.Router();
 
@@ -134,7 +135,7 @@ router.post("/", async (req, res) => {
 });
 
 router.post("/from-plan", async (req, res) => {
-  const { name, game_id, plan_id, proxy_id, raw } = req.body;
+  const { name, game_id, plan_id, proxy_id, raw, fleet } = req.body;
   if (!name || !game_id || !plan_id || !raw) {
     return res.status(400).json({ error: "name, game_id, plan_id, and request file text are required" });
   }
@@ -168,6 +169,12 @@ router.post("/from-plan", async (req, res) => {
     return res.status(400).json({
       error: `Account/batch name "${accountName}" already exists. Rename the file and drop it again, or edit the name field manually.`,
     });
+  }
+
+  let resolvedProxyId = proxy_id || null;
+  if (fleet && fleet.enabled !== false && (fleet.country || fleet.use_fleet)) {
+    const createdProxy = await createFleetProxyForAccount(accountName, fleet);
+    resolvedProxyId = createdProxy.id;
   }
 
   const steps = await query(
@@ -215,7 +222,7 @@ router.post("/from-plan", async (req, res) => {
       name: `${accountName} · ${label}`,
       filled: sessionFilled,
       runAt,
-      proxy_id,
+      proxy_id: resolvedProxyId,
       game_id,
       plan_id,
       plan_step_id: null,
@@ -314,7 +321,7 @@ router.post("/from-plan", async (req, res) => {
           name: `${accountName} · ${step.variable_name}`,
           filled: eventFilled,
           runAt: eventAt,
-          proxy_id,
+          proxy_id: resolvedProxyId,
           game_id,
           plan_id,
           plan_step_id: step.id,

@@ -36,7 +36,12 @@ async function migrate() {
     INSERT INTO settings (key, value)
     VALUES
       ('daily_time_spent', '30000'),
-      ('time_spent_noise', '300')
+      ('time_spent_noise', '300'),
+      ('fleet_host', 'residential-v2.fleetproxy.io'),
+      ('fleet_port', '5000'),
+      ('fleet_user', ''),
+      ('fleet_pass', ''),
+      ('fleet_protocol', 'http')
     ON CONFLICT (key) DO NOTHING;
   `);
 }

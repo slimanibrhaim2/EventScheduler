@@ -1,4 +1,5 @@
-:root {
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #0e1311;
   --panel: #15201b;
@@ -9,19 +10,69 @@
   --accent: #3dcf8e;
   --danger: #ef6b6b;
   --warn: #e0b45a;
+  --topbar: rgba(14, 19, 17, 0.92);
+  --flash-ok-bg: rgba(61, 207, 142, 0.12);
+  --theme-x: 50%;
+  --theme-y: 24px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef3ef;
+  --panel: #ffffff;
+  --panel-2: #f4f8f5;
+  --line: #d5e0d8;
+  --text: #142019;
+  --muted: #5f7267;
+  --accent: #1fa968;
+  --danger: #d64545;
+  --warn: #c4891f;
+  --topbar: rgba(255, 255, 255, 0.92);
+  --flash-ok-bg: rgba(31, 169, 104, 0.12);
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  background: var(--bg);
+}
+
 body {
   margin: 0;
   font-family: "Segoe UI", system-ui, sans-serif;
   background:
-    radial-gradient(900px 420px at 0% 0%, #1a3228 0%, transparent 55%),
+    radial-gradient(900px 420px at 0% 0%, color-mix(in srgb, var(--accent) 18%, transparent) 0%, transparent 55%),
     var(--bg);
   color: var(--text);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+@supports (view-transition-name: root) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+  }
+
+  ::view-transition-old(root) {
+    z-index: 1;
+  }
+
+  ::view-transition-new(root) {
+    z-index: 9999;
+    animation: theme-circle 0.55s ease-in-out;
+  }
+
+  @keyframes theme-circle {
+    from {
+      clip-path: circle(0px at var(--theme-x) var(--theme-y));
+    }
+    to {
+      clip-path: circle(150vmax at var(--theme-x) var(--theme-y));
+    }
+  }
 }
 
 .app-shell {
@@ -38,7 +89,7 @@ body {
   gap: 16px;
   padding: 14px 24px;
   border-bottom: 1px solid var(--line);
-  background: rgba(14, 19, 17, 0.92);
+  background: var(--topbar);
   backdrop-filter: blur(10px);
 }
 
@@ -107,10 +158,14 @@ body {
   font-weight: 600;
 }
 
+:root[data-theme="light"] .topnav a.active,
+:root[data-theme="light"] .btn.primary {
+  color: #ffffff;
+}
+
 .topnav a.active:hover,
 .btn.primary:hover {
-  background: #4fdb9c;
-  border-color: #4fdb9c;
+  filter: brightness(1.08);
 }
 
 .btn.danger,
@@ -166,6 +221,75 @@ body {
 
 .nav-refresh {
   margin-left: 4px;
+}
+
+.theme-toggle {
+  min-width: 40px;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.theme-toggle-icon {
+  line-height: 1;
+}
+
+.proxy-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 12px;
+}
+
+.fleet-box {
+  margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+
+.settings-wide {
+  max-width: 720px;
+}
+
+.settings-section-title {
+  margin: 22px 0 8px;
+  font-size: 15px;
+}
+
+.fleet-help {
+  margin-bottom: 12px;
+}
+
+.fleet-example {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: 12px;
+  overflow-x: auto;
+}
+
+.fleet-custom-input {
+  margin-top: 8px;
+}
+
+.proxy-check-row {
+  margin-top: 12px;
+  align-items: center;
+}
+
+.proxy-check-ok {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.proxy-check-bad {
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .datetime-cell {

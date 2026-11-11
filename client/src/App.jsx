@@ -11,6 +11,27 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { api } from "./api";
+import {
+  FLEET_COUNTRIES,
+  FLEET_COMMON_ISPS,
+  fleetBaseUsername,
+  normalizeFleetHost,
+  parseFleetProxyLine,
+  regionsForCountry,
+} from "./fleetLocations";
+
+const THEME_KEY = "es-theme";
+
+function getPreferredTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem(THEME_KEY, theme);
+}
 
 let confirmAsk = null;
 
@@ -186,7 +207,13 @@ export default function App() {
     default_run_time: "10:00",
     daily_time_spent: "30000",
     time_spent_noise: "300",
+    fleet_host: "residential-v2.fleetproxy.io",
+    fleet_port: "5000",
+    fleet_user: "",
+    fleet_pass: "",
+    fleet_protocol: "http",
   });
+  const [theme, setTheme] = useState(() => getPreferredTheme());
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -206,8 +233,27 @@ export default function App() {
   };
 
   useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
     load().catch((err) => setError(err.message));
   }, []);
+
+  const toggleTheme = (event) => {
+    const next = theme === "dark" ? "light" : "dark";
+    const x = event?.clientX ?? window.innerWidth / 2;
+    const y = event?.clientY ?? 24;
+    document.documentElement.style.setProperty("--theme-x", `${x}px`);
+    document.documentElement.style.setProperty("--theme-y", `${y}px`);
+
+    const swap = () => setTheme(next);
+    if (document.startViewTransition) {
+      document.startViewTransition(swap);
+    } else {
+      swap();
+    }
+  };
 
   // Keep jobs/status fresh without a full page reload.
   useEffect(() => {
@@ -248,6 +294,17 @@ export default function App() {
               {item.label}
             </NavLink>
           ))}
+          <button
+            type="button"
+            className="btn theme-toggle"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to day mode" : "Switch to night mode"}
+            aria-label="Toggle theme"
+          >
+            <span className="theme-toggle-icon" aria-hidden="true">
+              {theme === "dark" ? "☀" : "☾"}
+            </span>
+          </button>
           <button
             type="button"
             className="btn nav-refresh"
@@ -957,16 +1014,36 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
 
 function SettingsPage({ settings, onRefresh, setError, setMessage }) {
   const [form, setForm] = useState(settings);
+  const [pasteLine, setPasteLine] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
+    // Auto-refresh must not wipe fields while the user is editing.
+    if (dirtyRef.current) return;
     setForm(settings);
   }, [settings]);
+
+  const patchForm = (patch) => {
+    dirtyRef.current = true;
+    setForm((prev) => ({ ...prev, ...patch }));
+  };
 
   const save = async (event) => {
     event.preventDefault();
     setError("");
     try {
-      await api.saveSettings(form);
+      const payload = {
+        ...form,
+        fleet_host: normalizeFleetHost(form.fleet_host),
+        fleet_user: fleetBaseUsername(form.fleet_user),
+        fleet_port: String(form.fleet_port || "5000"),
+        fleet_pass: String(form.fleet_pass || ""),
+        fleet_protocol: form.fleet_protocol || "http",
+      };
+      const saved = await api.saveSettings(payload);
+      dirtyRef.current = false;
+      setForm(saved);
       setMessage("Settings saved.");
       await onRefresh();
     } catch (err) {
@@ -974,19 +1051,50 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
     }
   };
 
+  const applyPasteLine = async () => {
+    const parsed = parseFleetProxyLine(pasteLine);
+    if (!parsed) {
+      setError("Paste a FleetProxy line like residential-v2.fleetproxy.io:5000:user:pass");
+      return;
+    }
+    const next = {
+      ...form,
+      fleet_host: parsed.host,
+      fleet_port: String(parsed.port),
+      fleet_user: parsed.user,
+      fleet_pass: parsed.pass,
+      fleet_protocol: form.fleet_protocol || "http",
+    };
+    dirtyRef.current = true;
+    setForm(next);
+    setError("");
+    try {
+      const saved = await api.saveSettings(next);
+      dirtyRef.current = false;
+      setForm(saved);
+      setPasteLine("");
+      setMessage(
+        `FleetProxy saved. Host ${parsed.host}, user ${parsed.user}. Pick country/state later on New job.`
+      );
+      await onRefresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   return (
-    <section className="panel settings-card">
+    <section className="panel settings-card settings-wide">
       <div className="panel-head">
         <div>
           <h2>Settings</h2>
-          <p className="sub">Plan timing uses relative delays. Daily time_spent budget drives auto values.</p>
+          <p className="sub">Plan timing, noise, and FleetProxy credentials used for every account.</p>
         </div>
       </div>
       <form className="panel-body" onSubmit={save}>
         <label>Timezone label</label>
         <input
           value={form.timezone || ""}
-          onChange={(e) => setForm((prev) => ({ ...prev, timezone: e.target.value }))}
+          onChange={(e) => patchForm({ timezone: e.target.value })}
           placeholder="local"
         />
         <label>Daily time_spent budget (seconds)</label>
@@ -994,7 +1102,7 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
           type="number"
           min="1"
           value={form.daily_time_spent || "30000"}
-          onChange={(e) => setForm((prev) => ({ ...prev, daily_time_spent: e.target.value }))}
+          onChange={(e) => patchForm({ daily_time_spent: e.target.value })}
         />
         <p className="sub">
           Each plan day adds this many seconds. If a day has multiple events, that amount is divided between them, then
@@ -1005,9 +1113,81 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
           type="number"
           min="0"
           value={form.time_spent_noise || "300"}
-          onChange={(e) => setForm((prev) => ({ ...prev, time_spent_noise: e.target.value }))}
+          onChange={(e) => patchForm({ time_spent_noise: e.target.value })}
         />
         <p className="sub">Each scheduled request gets a random offset in this range so time_spent is not identical every run.</p>
+
+        <h3 className="settings-section-title">FleetProxy</h3>
+        <div className="fleet-help">
+          <p className="sub">
+            From your screenshot, copy <strong>one full generated line</strong> (not only the short username):
+          </p>
+          <pre className="fleet-example">
+            residential-v2.fleetproxy.io:5000:r_97ff38e1a1-country-US-region-alabama:567ca5a56b
+          </pre>
+          <p className="sub">
+            Use host <code>residential-v2.fleetproxy.io</code> (not <code>v2.fleetproxy.io</code>). We store only the
+            base user <code>r_97ff38e1a1</code> + password. Country/state/city are chosen later on New job and added to
+            the username when sending.
+          </p>
+        </div>
+        <label>Paste generated proxy line</label>
+        <div className="plan-picker">
+          <input
+            value={pasteLine}
+            onChange={(e) => setPasteLine(e.target.value)}
+            placeholder="residential-v2.fleetproxy.io:5000:r_xxxx-country-US-region-alabama:password"
+          />
+          <button type="button" className="btn primary" onClick={applyPasteLine}>
+            Apply & save
+          </button>
+        </div>
+        <div className="row">
+          <div>
+            <label>Host</label>
+            <input
+              value={form.fleet_host || ""}
+              onChange={(e) => patchForm({ fleet_host: e.target.value })}
+              placeholder="residential-v2.fleetproxy.io"
+            />
+          </div>
+          <div>
+            <label>Port</label>
+            <input
+              value={form.fleet_port || ""}
+              onChange={(e) => patchForm({ fleet_port: e.target.value })}
+              placeholder="5000"
+            />
+          </div>
+        </div>
+        <label>Username (base only)</label>
+        <input
+          value={form.fleet_user || ""}
+          onChange={(e) => patchForm({ fleet_user: e.target.value })}
+          placeholder="r_97ff38e1a1"
+        />
+        <label>Password</label>
+        <div className="plan-picker">
+          <input
+            type={showPass ? "text" : "password"}
+            value={form.fleet_pass || ""}
+            onChange={(e) => patchForm({ fleet_pass: e.target.value })}
+            placeholder="proxy password"
+            autoComplete="new-password"
+          />
+          <button type="button" className="btn" onClick={() => setShowPass((v) => !v)}>
+            {showPass ? "Hide" : "Show"}
+          </button>
+        </div>
+        <label>Protocol</label>
+        <select
+          value={form.fleet_protocol || "http"}
+          onChange={(e) => patchForm({ fleet_protocol: e.target.value })}
+        >
+          <option value="http">http / https</option>
+          <option value="socks5">socks5</option>
+        </select>
+
         <div className="actions">
           <button className="btn primary" type="submit">
             Save settings
@@ -1192,7 +1372,15 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
   const [name, setName] = useState("");
   const [gameId, setGameId] = useState("");
   const [planId, setPlanId] = useState("");
+  const [proxyMode, setProxyMode] = useState("fleet");
   const [proxyId, setProxyId] = useState("");
+  const [fleetCountry, setFleetCountry] = useState("US");
+  const [fleetState, setFleetState] = useState("");
+  const [fleetCity, setFleetCity] = useState("");
+  const [fleetIsp, setFleetIsp] = useState("");
+  const [fleetRotation, setFleetRotation] = useState("random");
+  const [proxyCheck, setProxyCheck] = useState(null);
+  const [checkingProxy, setCheckingProxy] = useState(false);
   const [raw, setRaw] = useState("");
   const [fileName, setFileName] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -1200,6 +1388,25 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
   const [planPreview, setPlanPreview] = useState(null);
   const [creatingPlan, setCreatingPlan] = useState(false);
   const [nameError, setNameError] = useState("");
+
+  const fleetConfigured = Boolean(settings?.fleet_user && settings?.fleet_pass);
+  const countryRegions = useMemo(() => regionsForCountry(fleetCountry), [fleetCountry]);
+  const regionCities = useMemo(() => {
+    const match = countryRegions.find((item) => item.state === fleetState);
+    return match?.cities || [];
+  }, [fleetState, countryRegions]);
+  const stateOptions = useMemo(
+    () => countryRegions.map((region) => ({ value: region.state, label: region.state })),
+    [countryRegions]
+  );
+  const cityOptions = useMemo(
+    () => regionCities.map((city) => ({ value: city, label: city })),
+    [regionCities]
+  );
+  const ispOptions = useMemo(
+    () => FLEET_COMMON_ISPS.map((isp) => ({ value: isp, label: isp })),
+    []
+  );
 
   const selectedGame = useMemo(
     () => games.find((game) => String(game.id) === String(gameId)),
@@ -1279,6 +1486,51 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
     await loadTextFile(event.dataTransfer.files?.[0]);
   };
 
+  const resetProxyCheck = () => setProxyCheck(null);
+
+  const checkSelectedProxy = async () => {
+    setError("");
+    setMessage("");
+    setCheckingProxy(true);
+    setProxyCheck(null);
+    try {
+      let result;
+      if (proxyMode === "fleet") {
+        if (!fleetConfigured) {
+          throw new Error("Configure FleetProxy in Settings first.");
+        }
+        if (!fleetCountry) {
+          throw new Error("Select a country before checking the proxy.");
+        }
+        result = await api.testProxy({
+          fleet: {
+            country: fleetCountry,
+            state: fleetState,
+            city: fleetCity,
+            isp: fleetIsp,
+            rotation: fleetRotation,
+          },
+        });
+      } else if (proxyMode === "saved") {
+        if (!proxyId) throw new Error("Select a saved proxy first.");
+        result = await api.testProxy({ proxy_id: Number(proxyId) });
+      } else {
+        throw new Error("Direct mode does not use a proxy.");
+      }
+      setProxyCheck(result);
+      if (result.ok) {
+        setMessage(`Proxy OK · IP ${result.ip || "unknown"} · ${result.ms}ms`);
+      } else {
+        setError(result.error || "Proxy check failed");
+      }
+    } catch (err) {
+      setProxyCheck({ ok: false, error: err.message });
+      setError(err.message);
+    } finally {
+      setCheckingProxy(false);
+    }
+  };
+
   const save = async (event) => {
     event.preventDefault();
     setError("");
@@ -1295,12 +1547,47 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
     if (!validateAccountName(name, Boolean(fileName))) {
       return;
     }
+    if (proxyMode === "fleet") {
+      if (!fleetConfigured) {
+        setError("Configure FleetProxy username/password in Settings first (paste a generator line).");
+        return;
+      }
+      if (!fleetCountry) {
+        setError("Select a FleetProxy country.");
+        return;
+      }
+      if (!proxyCheck?.ok) {
+        setError("Check the FleetProxy first. Schedule is blocked until the proxy test succeeds.");
+        return;
+      }
+    }
+    if (proxyMode === "saved") {
+      if (!proxyId) {
+        setError("Select a saved proxy, or switch to Direct / FleetProxy.");
+        return;
+      }
+      if (!proxyCheck?.ok) {
+        setError("Check the saved proxy first. Schedule is blocked until the proxy test succeeds.");
+        return;
+      }
+    }
     try {
       const result = await api.createJobsFromPlan({
         name: name.trim(),
         game_id: Number(gameId),
         plan_id: Number(planId),
-        proxy_id: proxyId || null,
+        proxy_id: proxyMode === "saved" ? proxyId || null : null,
+        fleet:
+          proxyMode === "fleet"
+            ? {
+                use_fleet: true,
+                country: fleetCountry,
+                state: fleetState,
+                city: fleetCity,
+                isp: fleetIsp,
+                rotation: fleetRotation,
+              }
+            : undefined,
         raw,
       });
       setMessage(`Scheduled ${result.count} jobs from the plan.`);
@@ -1508,18 +1795,224 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
           </div>
         )}
 
-        <label>Proxy (optional)</label>
-        <select value={proxyId} onChange={(e) => setProxyId(e.target.value)}>
-          <option value="">No proxy (direct)</option>
-          {proxies.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.protocol}://{p.host}:{p.port})
-            </option>
-          ))}
-        </select>
+        <label>Proxy</label>
+        <div className="proxy-mode-row">
+          <button
+            type="button"
+            className={`btn ${proxyMode === "fleet" ? "primary" : ""}`}
+            onClick={() => {
+              setProxyMode("fleet");
+              resetProxyCheck();
+            }}
+          >
+            FleetProxy
+          </button>
+          <button
+            type="button"
+            className={`btn ${proxyMode === "saved" ? "primary" : ""}`}
+            onClick={() => {
+              setProxyMode("saved");
+              resetProxyCheck();
+            }}
+          >
+            Saved proxy
+          </button>
+          <button
+            type="button"
+            className={`btn ${proxyMode === "none" ? "primary" : ""}`}
+            onClick={() => {
+              setProxyMode("none");
+              resetProxyCheck();
+            }}
+          >
+            Direct
+          </button>
+        </div>
+
+        {proxyMode === "fleet" && (
+          <div className="fleet-box">
+            {!fleetConfigured && (
+              <p className="field-error">
+                FleetProxy credentials missing. Open Settings, paste a generator line, and save.
+              </p>
+            )}
+            <p className="sub">
+              Same as the FleetProxy Generator: pick location + rotation. Check the proxy before scheduling — schedule is
+              blocked until the test succeeds.
+            </p>
+            <div className="row">
+              <div>
+                <SearchableSelect
+                  label="Country"
+                  value={fleetCountry}
+                  onChange={(next) => {
+                    setFleetCountry(next || "US");
+                    setFleetState("");
+                    setFleetCity("");
+                    resetProxyCheck();
+                  }}
+                  options={FLEET_COUNTRIES.map((country) => ({
+                    value: country.code,
+                    label: `${country.name} (${country.code})`,
+                  }))}
+                  allLabel="Select country"
+                  placeholder="Search countries…"
+                />
+              </div>
+              <div>
+                <label>Rotation</label>
+                <select
+                  value={fleetRotation}
+                  onChange={(e) => {
+                    setFleetRotation(e.target.value);
+                    resetProxyCheck();
+                  }}
+                >
+                  <option value="random">Random IP</option>
+                  <option value="sticky">Sticky IP</option>
+                </select>
+              </div>
+            </div>
+            <div className="row">
+              <div>
+                <SearchableSelect
+                  label="State / region"
+                  value={fleetState}
+                  onChange={(next) => {
+                    setFleetState(next);
+                    setFleetCity("");
+                    resetProxyCheck();
+                  }}
+                  options={stateOptions}
+                  allLabel="Any / random"
+                  placeholder="Search states…"
+                />
+                {stateOptions.length === 0 && (
+                  <input
+                    className="fleet-custom-input"
+                    value={fleetState}
+                    onChange={(e) => {
+                      setFleetState(e.target.value);
+                      setFleetCity("");
+                      resetProxyCheck();
+                    }}
+                    placeholder="Or type FleetProxy slug, e.g. alabama"
+                  />
+                )}
+              </div>
+              <div>
+                <SearchableSelect
+                  label="City"
+                  value={fleetCity}
+                  onChange={(next) => {
+                    setFleetCity(next);
+                    resetProxyCheck();
+                  }}
+                  options={cityOptions}
+                  allLabel="Any / random"
+                  placeholder="Search cities…"
+                />
+                {cityOptions.length === 0 && (
+                  <input
+                    className="fleet-custom-input"
+                    value={fleetCity}
+                    onChange={(e) => {
+                      setFleetCity(e.target.value);
+                      resetProxyCheck();
+                    }}
+                    placeholder="Or type slug, e.g. birmingham"
+                  />
+                )}
+              </div>
+            </div>
+            <SearchableSelect
+              label="ISP (optional)"
+              value={fleetIsp}
+              onChange={(next) => {
+                setFleetIsp(next);
+                resetProxyCheck();
+              }}
+              options={ispOptions}
+              allLabel="Any / random"
+              placeholder="Search ISPs…"
+            />
+            <input
+              className="fleet-custom-input"
+              value={fleetIsp}
+              onChange={(e) => {
+                setFleetIsp(e.target.value);
+                resetProxyCheck();
+              }}
+              placeholder="Or type ISP slug from FleetProxy, e.g. comcast"
+            />
+            <div className="actions tight proxy-check-row">
+              <button
+                type="button"
+                className="btn btn-info"
+                disabled={checkingProxy || !fleetConfigured}
+                onClick={checkSelectedProxy}
+              >
+                {checkingProxy ? "Checking…" : "Check proxy"}
+              </button>
+              {proxyCheck?.ok && (
+                <span className="proxy-check-ok">
+                  Working · IP {proxyCheck.ip || "unknown"} · {proxyCheck.ms}ms
+                </span>
+              )}
+              {proxyCheck && !proxyCheck.ok && (
+                <span className="proxy-check-bad">{proxyCheck.error || "Failed"}</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {proxyMode === "saved" && (
+          <div className="fleet-box">
+            <select
+              value={proxyId}
+              onChange={(e) => {
+                setProxyId(e.target.value);
+                resetProxyCheck();
+              }}
+            >
+              <option value="">Select a saved proxy</option>
+              {proxies.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.protocol}://{p.host}:{p.port})
+                </option>
+              ))}
+            </select>
+            <div className="actions tight proxy-check-row">
+              <button
+                type="button"
+                className="btn btn-info"
+                disabled={checkingProxy || !proxyId}
+                onClick={checkSelectedProxy}
+              >
+                {checkingProxy ? "Checking…" : "Check proxy"}
+              </button>
+              {proxyCheck?.ok && (
+                <span className="proxy-check-ok">
+                  Working · IP {proxyCheck.ip || "unknown"} · {proxyCheck.ms}ms
+                </span>
+              )}
+              {proxyCheck && !proxyCheck.ok && (
+                <span className="proxy-check-bad">{proxyCheck.error || "Failed"}</span>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="actions">
-          <button className="btn primary" type="submit" disabled={creatingPlan || nameTaken}>
+          <button
+            className="btn primary"
+            type="submit"
+            disabled={
+              creatingPlan ||
+              nameTaken ||
+              ((proxyMode === "fleet" || proxyMode === "saved") && !proxyCheck?.ok)
+            }
+          >
             Schedule plan jobs
           </button>
         </div>

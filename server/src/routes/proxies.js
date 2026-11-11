@@ -1,11 +1,38 @@
 const express = require("express");
 const { query } = require("../db");
+const { buildFleetProxyConfig, testProxyConnection } = require("../fleetProxy");
 
 const router = express.Router();
 
 router.get("/", async (_req, res) => {
   const result = await query(`SELECT * FROM proxies ORDER BY created_at DESC`);
   res.json(result.rows);
+});
+
+router.post("/test", async (req, res) => {
+  const { proxy_id, fleet, protocol, host, port, username, password } = req.body || {};
+
+  let proxy = null;
+  if (proxy_id) {
+    const found = await query(`SELECT * FROM proxies WHERE id = $1`, [proxy_id]);
+    proxy = found.rows[0];
+    if (!proxy) return res.status(404).json({ error: "Proxy not found" });
+  } else if (fleet) {
+    proxy = await buildFleetProxyConfig(fleet, "proxy-check");
+  } else if (host && port) {
+    proxy = {
+      protocol: protocol || "http",
+      host,
+      port: Number(port),
+      username: username || null,
+      password: password || null,
+    };
+  } else {
+    return res.status(400).json({ error: "Provide fleet targeting, a saved proxy_id, or host/port" });
+  }
+
+  const result = await testProxyConnection(proxy);
+  res.json(result);
 });
 
 router.post("/", async (req, res) => {

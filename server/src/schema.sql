@@ -93,7 +93,12 @@ VALUES
   ('timezone', 'local'),
   ('default_run_time', '10:00'),
   ('daily_time_spent', '30000'),
-  ('time_spent_noise', '300')
+  ('time_spent_noise', '300'),
+  ('fleet_host', 'residential-v2.fleetproxy.io'),
+  ('fleet_port', '5000'),
+  ('fleet_user', ''),
+  ('fleet_pass', ''),
+  ('fleet_protocol', 'http')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE INDEX IF NOT EXISTS game_variables_game_id_idx ON game_variables (game_id, sort_order);
