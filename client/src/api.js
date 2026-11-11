@@ -23,6 +23,7 @@ export const api = {
   deleteBatch: (batchId) => request(`/api/jobs/batches/${batchId}`, { method: "DELETE" }),
   proxies: () => request("/api/proxies"),
   createProxy: (body) => request("/api/proxies", { method: "POST", body: JSON.stringify(body) }),
+  updateProxy: (id, body) => request(`/api/proxies/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   testProxy: (body) => request("/api/proxies/test", { method: "POST", body: JSON.stringify(body) }),
   deleteProxy: (id) => request(`/api/proxies/${id}`, { method: "DELETE" }),
   runs: ({ gameId, account } = {}) => {

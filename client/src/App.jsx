@@ -14,9 +14,12 @@ import { api } from "./api";
 import {
   FLEET_COUNTRIES,
   FLEET_COMMON_ISPS,
+  buildFleetUsernameClient,
   fleetBaseUsername,
+  isFleetProxy,
   normalizeFleetHost,
   parseFleetProxyLine,
+  parseFleetUsername,
   regionsForCountry,
 } from "./fleetLocations";
 
@@ -143,6 +146,39 @@ function DateTimeCell({ value }) {
       <div className="sub">{date.toLocaleTimeString()}</div>
     </div>
   );
+}
+
+function startOfLocalDay(date = new Date()) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function matchesDateFilter(value, filter) {
+  if (!filter || filter === "all") return true;
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+
+  const today = startOfLocalDay();
+  const point = date.getTime();
+
+  if (filter === "today") {
+    const end = new Date(today);
+    end.setDate(end.getDate() + 1);
+    return point >= today.getTime() && point < end.getTime();
+  }
+  if (filter === "yesterday") {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 1);
+    return point >= start.getTime() && point < today.getTime();
+  }
+  if (filter === "7d") {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 6);
+    return point >= start.getTime();
+  }
+  return true;
 }
 
 function formatDelay({ delay_days = 0, delay_hours = 0, delay_minutes = 0 }) {
@@ -369,7 +405,7 @@ export default function App() {
           />
           <Route
             path="/proxies"
-            element={<ProxiesPage proxies={proxies} onRefresh={load} {...flash} />}
+            element={<ProxiesPage proxies={proxies} settings={settings} onRefresh={load} {...flash} />}
           />
           <Route path="/history" element={<HistoryPage games={games} />} />
           <Route
@@ -2129,6 +2165,7 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
   const [gameFilter, setGameFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState("today");
 
   const accountOptions = useMemo(() => {
     const names = new Set(jobs.map(jobAccountName).filter(Boolean));
@@ -2147,13 +2184,16 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [jobs]);
 
-  const hasFilters = Boolean(accountFilter || gameFilter || statusFilter || kindFilter);
+  const hasFilters = Boolean(
+    accountFilter || gameFilter || statusFilter || kindFilter || (dateFilter && dateFilter !== "all")
+  );
 
   const clearFilters = () => {
     setAccountFilter("");
     setGameFilter("");
     setStatusFilter("");
     setKindFilter("");
+    setDateFilter("all");
   };
 
   const openAccountDetails = (job) => {
@@ -2170,9 +2210,10 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
       if (gameFilter && String(job.game_id || "") !== gameFilter) return false;
       if (statusFilter && statusFilter !== "all" && job.status !== statusFilter) return false;
       if (kindFilter && jobKind(job) !== kindFilter) return false;
+      if (!matchesDateFilter(job.run_at, dateFilter)) return false;
       return true;
     });
-  }, [jobs, accountFilter, gameFilter, statusFilter, kindFilter]);
+  }, [jobs, accountFilter, gameFilter, statusFilter, kindFilter, dateFilter]);
 
   const displayedJobs = useMemo(() => {
     if (showFull) {
@@ -2286,6 +2327,15 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
               <option value="running">running</option>
               <option value="done">done</option>
               <option value="failed">failed</option>
+            </select>
+          </div>
+          <div>
+            <label>Date</label>
+            <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="7d">Last 7 days</option>
+              <option value="all">All dates</option>
             </select>
           </div>
         </div>
@@ -2560,24 +2610,129 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
   );
 }
 
-function ProxiesPage({ proxies, onRefresh, setError, setMessage }) {
-  const [form, setForm] = useState({
+function ProxiesPage({ proxies, settings, onRefresh, setError, setMessage }) {
+  const emptyForm = {
     name: "",
     protocol: "http",
     host: "",
     port: "8080",
     username: "",
     password: "",
-  });
+  };
+  const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState(null);
+  const [editingFleet, setEditingFleet] = useState(false);
+  const [fleetCountry, setFleetCountry] = useState("US");
+  const [fleetState, setFleetState] = useState("");
+  const [fleetCity, setFleetCity] = useState("");
+  const [fleetIsp, setFleetIsp] = useState("");
+  const [fleetRotation, setFleetRotation] = useState("random");
+  const [fleetSession, setFleetSession] = useState("");
   const setField = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+
+  const countryRegions = useMemo(() => regionsForCountry(fleetCountry), [fleetCountry]);
+  const regionCities = useMemo(() => {
+    const match = countryRegions.find((item) => item.state === fleetState);
+    return match?.cities || [];
+  }, [fleetState, countryRegions]);
+  const stateOptions = useMemo(
+    () => countryRegions.map((region) => ({ value: region.state, label: region.state })),
+    [countryRegions]
+  );
+  const cityOptions = useMemo(
+    () => regionCities.map((city) => ({ value: city, label: city })),
+    [regionCities]
+  );
+  const ispOptions = useMemo(
+    () => FLEET_COMMON_ISPS.map((isp) => ({ value: isp, label: isp })),
+    []
+  );
+
+  const startEdit = (proxy) => {
+    setEditingId(proxy.id);
+    const fleet = isFleetProxy(proxy);
+    setEditingFleet(fleet);
+    setForm({
+      name: proxy.name || "",
+      protocol: proxy.protocol || "http",
+      host: proxy.host || "",
+      port: String(proxy.port || "8080"),
+      username: proxy.username || "",
+      password: proxy.password || "",
+    });
+    if (fleet) {
+      const parsed = parseFleetUsername(proxy.username);
+      setFleetCountry(parsed.country || "US");
+      setFleetState(parsed.state || "");
+      setFleetCity(parsed.city || "");
+      setFleetIsp(parsed.isp || "");
+      setFleetRotation(parsed.rotation || "random");
+      setFleetSession(parsed.session || "");
+    } else {
+      setFleetCountry("US");
+      setFleetState("");
+      setFleetCity("");
+      setFleetIsp("");
+      setFleetRotation("random");
+      setFleetSession("");
+    }
+    setError("");
+    setMessage(`Editing ${proxy.name}`);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditingFleet(false);
+    setForm(emptyForm);
+    setFleetCountry("US");
+    setFleetState("");
+    setFleetCity("");
+    setFleetIsp("");
+    setFleetRotation("random");
+    setFleetSession("");
+  };
 
   const save = async (event) => {
     event.preventDefault();
     setError("");
     try {
-      await api.createProxy({ ...form, port: Number(form.port) });
-      setMessage("Proxy saved. Attach it to a job.");
-      setForm({ name: "", protocol: "http", host: "", port: "8080", username: "", password: "" });
+      let payload = { ...form, port: Number(form.port) };
+      if (editingFleet) {
+        const baseUser = fleetBaseUsername(settings?.fleet_user || form.username);
+        if (!baseUser) {
+          setError("FleetProxy base username missing in Settings.");
+          return;
+        }
+        const username = buildFleetUsernameClient(baseUser, {
+          country: fleetCountry,
+          state: fleetState,
+          city: fleetCity,
+          isp: fleetIsp,
+          rotation: fleetRotation,
+          session: fleetSession,
+        });
+        const labelParts = [fleetCountry, fleetState, fleetCity, fleetIsp, fleetRotation].filter(Boolean);
+        const nameParts = String(form.name || "").split(" · ");
+        const accountLabel =
+          nameParts.length >= 2 && nameParts[0] === "Fleet" ? nameParts[1] : nameParts[0] || "account";
+        payload = {
+          ...payload,
+          host: normalizeFleetHost(settings?.fleet_host || form.host),
+          port: Number(settings?.fleet_port || form.port || 5000),
+          protocol: settings?.fleet_protocol || form.protocol || "http",
+          username,
+          password: settings?.fleet_pass || form.password,
+          name: `Fleet · ${accountLabel} · ${labelParts.join(" · ")}`.slice(0, 180),
+        };
+      }
+      if (editingId) {
+        await api.updateProxy(editingId, payload);
+        setMessage("Proxy updated.");
+      } else {
+        await api.createProxy(payload);
+        setMessage("Proxy saved. Attach it to a job.");
+      }
+      cancelEdit();
       await onRefresh();
     } catch (err) {
       setError(err.message);
@@ -2589,45 +2744,164 @@ function ProxiesPage({ proxies, onRefresh, setError, setMessage }) {
       <form className="panel" onSubmit={save}>
         <div className="panel-head">
           <div>
-            <h2>Add proxy</h2>
-            <p className="sub">HTTP, HTTPS, or SOCKS5. Rotation comes from your provider if the host rotates.</p>
+            <h2>{editingId ? (editingFleet ? "Edit FleetProxy" : "Edit proxy") : "Add proxy"}</h2>
+            <p className="sub">
+              {editingFleet
+                ? "Same location controls as New job. Changing country/state/city rebuilds the FleetProxy username."
+                : "HTTP, HTTPS, or SOCKS5. Rotation comes from your provider if the host rotates."}
+            </p>
           </div>
         </div>
         <div className="panel-body">
           <label>Name</label>
           <input value={form.name} onChange={(e) => setField("name", e.target.value)} required />
-          <div className="row-3">
-            <div>
-              <label>Protocol</label>
-              <select value={form.protocol} onChange={(e) => setField("protocol", e.target.value)}>
-                <option value="http">http</option>
-                <option value="https">https</option>
-                <option value="socks5">socks5</option>
-              </select>
+
+          {editingFleet ? (
+            <div className="fleet-box">
+              <div className="row">
+                <div>
+                  <SearchableSelect
+                    label="Country"
+                    value={fleetCountry}
+                    onChange={(next) => {
+                      setFleetCountry(next || "US");
+                      setFleetState("");
+                      setFleetCity("");
+                    }}
+                    options={FLEET_COUNTRIES.map((country) => ({
+                      value: country.code,
+                      label: `${country.name} (${country.code})`,
+                    }))}
+                    allLabel="Select country"
+                    placeholder="Search countries…"
+                  />
+                </div>
+                <div>
+                  <label>Rotation</label>
+                  <select value={fleetRotation} onChange={(e) => setFleetRotation(e.target.value)}>
+                    <option value="random">Random IP</option>
+                    <option value="sticky">Sticky IP</option>
+                  </select>
+                </div>
+              </div>
+              <div className="row">
+                <div>
+                  <SearchableSelect
+                    label="State / region"
+                    value={fleetState}
+                    onChange={(next) => {
+                      setFleetState(next);
+                      setFleetCity("");
+                    }}
+                    options={stateOptions}
+                    allLabel="Any / random"
+                    placeholder="Search states…"
+                  />
+                  {stateOptions.length === 0 && (
+                    <input
+                      className="fleet-custom-input"
+                      value={fleetState}
+                      onChange={(e) => {
+                        setFleetState(e.target.value);
+                        setFleetCity("");
+                      }}
+                      placeholder="Or type slug, e.g. alabama"
+                    />
+                  )}
+                </div>
+                <div>
+                  <SearchableSelect
+                    label="City"
+                    value={fleetCity}
+                    onChange={setFleetCity}
+                    options={cityOptions}
+                    allLabel="Any / random"
+                    placeholder="Search cities…"
+                  />
+                  {cityOptions.length === 0 && (
+                    <input
+                      className="fleet-custom-input"
+                      value={fleetCity}
+                      onChange={(e) => setFleetCity(e.target.value)}
+                      placeholder="Or type slug, e.g. birmingham"
+                    />
+                  )}
+                </div>
+              </div>
+              <SearchableSelect
+                label="ISP (optional)"
+                value={fleetIsp}
+                onChange={setFleetIsp}
+                options={ispOptions}
+                allLabel="Any / random"
+                placeholder="Search ISPs…"
+              />
+              <input
+                className="fleet-custom-input"
+                value={fleetIsp}
+                onChange={(e) => setFleetIsp(e.target.value)}
+                placeholder="Or type ISP slug, e.g. comcast"
+              />
+              <p className="sub">
+                Username preview:{" "}
+                <code>
+                  {buildFleetUsernameClient(settings?.fleet_user || form.username, {
+                    country: fleetCountry,
+                    state: fleetState,
+                    city: fleetCity,
+                    isp: fleetIsp,
+                    rotation: fleetRotation,
+                    session: fleetSession,
+                  }) || "—"}
+                </code>
+              </p>
             </div>
-            <div>
-              <label>Host</label>
-              <input value={form.host} onChange={(e) => setField("host", e.target.value)} required />
-            </div>
-            <div>
-              <label>Port</label>
-              <input value={form.port} onChange={(e) => setField("port", e.target.value)} required />
-            </div>
-          </div>
-          <div className="row">
-            <div>
-              <label>Username (optional)</label>
-              <input value={form.username} onChange={(e) => setField("username", e.target.value)} />
-            </div>
-            <div>
-              <label>Password (optional)</label>
-              <input type="password" value={form.password} onChange={(e) => setField("password", e.target.value)} />
-            </div>
-          </div>
+          ) : (
+            <>
+              <div className="row-3">
+                <div>
+                  <label>Protocol</label>
+                  <select value={form.protocol} onChange={(e) => setField("protocol", e.target.value)}>
+                    <option value="http">http</option>
+                    <option value="https">https</option>
+                    <option value="socks5">socks5</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Host</label>
+                  <input value={form.host} onChange={(e) => setField("host", e.target.value)} required />
+                </div>
+                <div>
+                  <label>Port</label>
+                  <input value={form.port} onChange={(e) => setField("port", e.target.value)} required />
+                </div>
+              </div>
+              <div className="row">
+                <div>
+                  <label>Username (optional)</label>
+                  <input value={form.username} onChange={(e) => setField("username", e.target.value)} />
+                </div>
+                <div>
+                  <label>Password (optional)</label>
+                  <input
+                    type="password"
+                    value={form.password}
+                    onChange={(e) => setField("password", e.target.value)}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
           <div className="actions">
             <button className="btn primary" type="submit">
-              Save proxy
+              {editingId ? "Update proxy" : "Save proxy"}
             </button>
+            {editingId && (
+              <button className="btn" type="button" onClick={cancelEdit}>
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       </form>
@@ -2650,28 +2924,42 @@ function ProxiesPage({ proxies, onRefresh, setError, setMessage }) {
             <tbody>
               {proxies.map((p) => (
                 <tr key={p.id}>
-                  <td>{p.name}</td>
+                  <td>
+                    <strong>{p.name}</strong>
+                    {isFleetProxy(p) && <div className="sub">FleetProxy</div>}
+                  </td>
                   <td>
                     {p.protocol}://{p.host}:{p.port}
                   </td>
                   <td>
-                    <button
-                      className="btn btn-danger"
-                      onClick={async () => {
-                        if (
-                          !(await confirmAction(`Delete proxy "${p.name}"?`, {
-                            title: "Delete proxy",
-                            confirmLabel: "Delete",
-                            danger: true,
-                          }))
-                        ) {
-                          return;
-                        }
-                        api.deleteProxy(p.id).then(onRefresh).catch((e) => setError(e.message));
-                      }}
-                    >
-                      Delete
-                    </button>
+                    <div className="row-actions">
+                      <button type="button" className="btn btn-info" onClick={() => startEdit(p)}>
+                        Edit
+                      </button>
+                      <button
+                        className="btn btn-danger"
+                        onClick={async () => {
+                          if (
+                            !(await confirmAction(`Delete proxy "${p.name}"?`, {
+                              title: "Delete proxy",
+                              confirmLabel: "Delete",
+                              danger: true,
+                            }))
+                          ) {
+                            return;
+                          }
+                          api
+                            .deleteProxy(p.id)
+                            .then(() => {
+                              if (editingId === p.id) cancelEdit();
+                              return onRefresh();
+                            })
+                            .catch((e) => setError(e.message));
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -2689,6 +2977,9 @@ function HistoryPage({ games }) {
   const [accounts, setAccounts] = useState([]);
   const [gameId, setGameId] = useState("");
   const [account, setAccount] = useState(() => searchParams.get("account") || "");
+  const [kindFilter, setKindFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState("today");
   const [open, setOpen] = useState(null);
   const [error, setError] = useState("");
 
@@ -2727,11 +3018,30 @@ function HistoryPage({ games }) {
     () => games.map((game) => ({ value: String(game.id), label: game.name })),
     [games]
   );
-  const hasFilters = Boolean(gameId || account);
+  const filteredRuns = useMemo(
+    () =>
+      runs.filter((run) => {
+        if (!matchesDateFilter(run.started_at, dateFilter)) return false;
+        if (kindFilter) {
+          const kind = run.request_kind || shortEndpoint(run.request_url || run.url) || "";
+          if (kind !== kindFilter) return false;
+        }
+        if (statusFilter === "ok" && !run.ok) return false;
+        if (statusFilter === "failed" && run.ok) return false;
+        return true;
+      }),
+    [runs, dateFilter, kindFilter, statusFilter]
+  );
+  const hasFilters = Boolean(
+    gameId || account || kindFilter || statusFilter || (dateFilter && dateFilter !== "all")
+  );
 
   const clearFilters = () => {
     setGameId("");
     setAccount("");
+    setKindFilter("");
+    setStatusFilter("");
+    setDateFilter("all");
     setSearchParams({});
   };
 
@@ -2740,7 +3050,7 @@ function HistoryPage({ games }) {
       <div className="panel-head">
         <div>
           <h2>Run history</h2>
-          <p className="sub">Filter by game or account, then click a row to expand details. Auto-refreshes every 5s.</p>
+          <p className="sub">Same filters as Scheduled (account, game, type, result, date). Auto-refreshes every 5s.</p>
         </div>
         <button type="button" className="btn" onClick={() => loadRuns().catch((err) => setError(err.message))}>
           Refresh
@@ -2750,15 +3060,7 @@ function HistoryPage({ games }) {
         {error && <p className="error">{error}</p>}
         <div className="filters">
           <SearchableSelect
-            label="Game"
-            value={gameId}
-            onChange={setGameId}
-            options={gameOptions}
-            allLabel="All games"
-            placeholder="Search games…"
-          />
-          <SearchableSelect
-            label="Account / batch"
+            label="Account"
             value={account}
             onChange={(next) => {
               setAccount(next);
@@ -2769,6 +3071,39 @@ function HistoryPage({ games }) {
             allLabel="All accounts"
             placeholder="Search accounts…"
           />
+          <SearchableSelect
+            label="Game"
+            value={gameId}
+            onChange={setGameId}
+            options={gameOptions}
+            allLabel="All games"
+            placeholder="Search games…"
+          />
+          <div>
+            <label>Type</label>
+            <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
+              <option value="">All types</option>
+              <option value="session">session</option>
+              <option value="event">event</option>
+            </select>
+          </div>
+          <div>
+            <label>Result</label>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="">All results</option>
+              <option value="ok">ok</option>
+              <option value="failed">failed</option>
+            </select>
+          </div>
+          <div>
+            <label>Date</label>
+            <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="7d">Last 7 days</option>
+              <option value="all">All dates</option>
+            </select>
+          </div>
         </div>
         {hasFilters && (
           <div className="actions tight filter-actions">
@@ -2778,7 +3113,7 @@ function HistoryPage({ games }) {
           </div>
         )}
 
-        {runs.length === 0 && <p className="sub">No runs match these filters.</p>}
+        {filteredRuns.length === 0 && <p className="sub">No runs match these filters.</p>}
         <table className="history-table">
           <thead>
             <tr>
@@ -2791,7 +3126,7 @@ function HistoryPage({ games }) {
             </tr>
           </thead>
           <tbody>
-            {runs.map((run) => {
+            {filteredRuns.map((run) => {
               const kind = run.request_kind || shortEndpoint(run.request_url || run.url) || "request";
               const task = jobTaskLabel(run);
               const isOpen = open === run.id;

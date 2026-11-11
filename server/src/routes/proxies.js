@@ -50,6 +50,36 @@ router.post("/", async (req, res) => {
   res.status(201).json(result.rows[0]);
 });
 
+router.put("/:id", async (req, res) => {
+  const { name, protocol, host, port, username, password } = req.body;
+  if (!name || !host || !port) {
+    return res.status(400).json({ error: "name, host, and port are required" });
+  }
+
+  const result = await query(
+    `UPDATE proxies
+     SET name = $2,
+         protocol = $3,
+         host = $4,
+         port = $5,
+         username = $6,
+         password = $7
+     WHERE id = $1
+     RETURNING *`,
+    [
+      req.params.id,
+      name,
+      protocol || "http",
+      host,
+      Number(port),
+      username || null,
+      password || null,
+    ]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: "Proxy not found" });
+  res.json(result.rows[0]);
+});
+
 router.delete("/:id", async (req, res) => {
   await query(`DELETE FROM proxies WHERE id = $1`, [req.params.id]);
   res.status(204).end();

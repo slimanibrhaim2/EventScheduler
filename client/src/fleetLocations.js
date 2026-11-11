@@ -163,6 +163,75 @@ export function fleetBaseUsername(user) {
     .replace(/-(country|region|city|isp|session)-.*$/i, "");
 }
 
+export function isFleetProxy(proxy) {
+  const host = String(proxy?.host || "").toLowerCase();
+  const name = String(proxy?.name || "");
+  const user = String(proxy?.username || "");
+  return (
+    host.includes("fleetproxy.io") ||
+    name.startsWith("Fleet ·") ||
+    /-(country|region|city)-/i.test(user)
+  );
+}
+
+/** Parse FleetProxy username targeting back into form fields. */
+export function parseFleetUsername(username) {
+  const raw = String(username || "").trim();
+  const base = fleetBaseUsername(raw);
+  const country = (raw.match(/-country-([A-Za-z]{2})/i) || [])[1]?.toUpperCase() || "";
+  const state = (raw.match(/-region-([a-z0-9_-]+)/i) || [])[1] || "";
+  const city = (raw.match(/-city-([a-z0-9_-]+)/i) || [])[1] || "";
+  const isp = (raw.match(/-isp-([a-z0-9_-]+)/i) || [])[1] || "";
+  const session = (raw.match(/-session-([a-z0-9_-]+)/i) || [])[1] || "";
+  return {
+    base,
+    country: country || "US",
+    state,
+    city,
+    isp,
+    rotation: session ? "sticky" : "random",
+    session,
+  };
+}
+
+export function buildFleetUsernameClient(baseUser, targeting = {}) {
+  let user = fleetBaseUsername(baseUser);
+  if (!user) return "";
+  const country = String(targeting.country || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "")
+    .slice(0, 2);
+  const region = String(targeting.state || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9_-]/g, "");
+  const city = String(targeting.city || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9_-]/g, "");
+  const isp = String(targeting.isp || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9_-]/g, "");
+  if (country) user += `-country-${country}`;
+  if (region) user += `-region-${region}`;
+  if (city) user += `-city-${city}`;
+  if (isp) user += `-isp-${isp}`;
+  if (String(targeting.rotation || "").toLowerCase() === "sticky") {
+    const session =
+      String(targeting.session || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, "") || `s${Date.now().toString(36)}`;
+    user += `-session-${session}`;
+  }
+  return user;
+}
+
 export function normalizeFleetHost(host) {
   const value = String(host || "").trim();
   if (!value) return "residential-v2.fleetproxy.io";
