@@ -19,15 +19,36 @@ function countryCode(value) {
     .slice(0, 2);
 }
 
-async function getFleetSettings() {
-  const result = await query(
+async function getFleetSettings(userId) {
+  const defaults = {
+    fleet_host: "residential-v2.fleetproxy.io",
+    fleet_port: "5000",
+    fleet_user: "",
+    fleet_pass: "",
+    fleet_protocol: "http",
+  };
+
+  const global = await query(
     `SELECT key, value FROM settings
      WHERE key IN (
        'fleet_host', 'fleet_port', 'fleet_user', 'fleet_pass', 'fleet_protocol'
      )`
   );
-  const map = {};
-  for (const row of result.rows) map[row.key] = row.value;
+  const map = { ...defaults };
+  for (const row of global.rows) map[row.key] = row.value;
+
+  if (userId) {
+    const user = await query(
+      `SELECT key, value FROM user_settings
+       WHERE user_id = $1
+         AND key IN (
+           'fleet_host', 'fleet_port', 'fleet_user', 'fleet_pass', 'fleet_protocol'
+         )`,
+      [userId]
+    );
+    for (const row of user.rows) map[row.key] = row.value;
+  }
+
   let host = map.fleet_host || "residential-v2.fleetproxy.io";
   if (host === "v2.fleetproxy.io" || host === "fleetproxy.io") {
     host = "residential-v2.fleetproxy.io";
@@ -72,29 +93,28 @@ function buildFleetUsername(baseUser, targeting = {}) {
   return user;
 }
 
-function buildFleetProxyConfig(targeting = {}, accountHint = "check") {
-  return getFleetSettings().then((fleet) => {
-    if (!fleet.user || !fleet.pass) {
-      throw new Error(
-        "FleetProxy is not configured. Open Settings and paste your FleetProxy username and password from the generator."
-      );
-    }
-    if (!targeting.country) {
-      throw new Error("Select a FleetProxy country.");
-    }
-    const sessionSeed = slug(accountHint) || crypto.randomBytes(3).toString("hex");
-    const username = buildFleetUsername(fleet.user, {
-      ...targeting,
-      session: sessionSeed,
-    });
-    return {
-      protocol: fleet.protocol || "http",
-      host: fleet.host,
-      port: fleet.port,
-      username,
-      password: fleet.pass,
-    };
+async function buildFleetProxyConfig(targeting = {}, accountHint = "check", userId = null) {
+  const fleet = await getFleetSettings(userId);
+  if (!fleet.user || !fleet.pass) {
+    throw new Error(
+      "FleetProxy is not configured. Open Settings and paste your FleetProxy username and password from the generator."
+    );
+  }
+  if (!targeting.country) {
+    throw new Error("Select a FleetProxy country.");
+  }
+  const sessionSeed = slug(accountHint) || crypto.randomBytes(3).toString("hex");
+  const username = buildFleetUsername(fleet.user, {
+    ...targeting,
+    session: sessionSeed,
   });
+  return {
+    protocol: fleet.protocol || "http",
+    host: fleet.host,
+    port: fleet.port,
+    username,
+    password: fleet.pass,
+  };
 }
 
 async function testProxyConnection(proxy) {
@@ -145,8 +165,8 @@ async function testProxyConnection(proxy) {
   }
 }
 
-async function createFleetProxyForAccount(accountName, targeting = {}) {
-  const proxy = await buildFleetProxyConfig(targeting, accountName);
+async function createFleetProxyForAccount(accountName, targeting = {}, userId = null) {
+  const proxy = await buildFleetProxyConfig(targeting, accountName, userId);
   const country = countryCode(targeting.country);
   const labelParts = [
     country,
@@ -158,10 +178,10 @@ async function createFleetProxyForAccount(accountName, targeting = {}) {
   const name = `Fleet · ${accountName} · ${labelParts.join(" · ")}`.slice(0, 180);
 
   const result = await query(
-    `INSERT INTO proxies (name, protocol, host, port, username, password)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO proxies (name, protocol, host, port, username, password, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [name, proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password]
+    [name, proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password, userId]
   );
   return result.rows[0];
 }

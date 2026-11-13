@@ -57,7 +57,10 @@ export function AuthProvider({ children }) {
       loading,
       error,
       isApproved: appUser?.status === "approved",
-      isAdmin: appUser?.role === "admin" && appUser?.status === "approved",
+      isOwner: appUser?.role === "owner" && appUser?.status === "approved",
+      isAdmin:
+        (appUser?.role === "owner" || appUser?.role === "admin") &&
+        appUser?.status === "approved",
       isPending: appUser?.status === "pending",
       isRejected: appUser?.status === "rejected",
       async signInWithGoogle() {

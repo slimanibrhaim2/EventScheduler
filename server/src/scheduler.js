@@ -63,6 +63,7 @@ async function executeJob(job) {
 
     const body = storeBody(response.data);
     const headers = response.headers || {};
+    const ok = response.status >= 200 && response.status < 400;
 
     await query(
       `UPDATE job_runs
@@ -72,20 +73,21 @@ async function executeJob(job) {
            response_preview = $4,
            response_body = $5,
            response_headers = $6::jsonb,
-           error = NULL
+           error = $7
        WHERE id = $1`,
       [
         runId,
-        response.status >= 200 && response.status < 400,
+        ok,
         response.status,
         body.slice(0, 500),
         body,
         JSON.stringify(headers),
+        ok ? null : `HTTP ${response.status}`,
       ]
     );
     await query(
-      `UPDATE jobs SET status = 'done', updated_at = NOW() WHERE id = $1`,
-      [job.id]
+      `UPDATE jobs SET status = $2, updated_at = NOW() WHERE id = $1`,
+      [job.id, ok ? "done" : "failed"]
     );
   } catch (err) {
     await query(
@@ -117,6 +119,41 @@ async function claimDueJobs() {
   return result.rows;
 }
 
+const HISTORY_RETENTION_DAYS = Number(process.env.HISTORY_RETENTION_DAYS || 20);
+
+/**
+ * After an account/batch is fully finished, wait retention days, then delete
+ * that batch's jobs (job_runs cascade). Also cleans old finished jobs without batch_id.
+ */
+async function purgeFinishedAccounts(days = HISTORY_RETENTION_DAYS) {
+  const keepDays = String(Math.max(1, Number(days) || 20));
+
+  const batches = await query(
+    `DELETE FROM jobs
+     WHERE batch_id IN (
+       SELECT j.batch_id
+       FROM jobs j
+       WHERE j.batch_id IS NOT NULL
+       GROUP BY j.batch_id
+       HAVING COUNT(*) FILTER (WHERE j.status NOT IN ('done', 'failed')) = 0
+          AND MAX(j.updated_at) < NOW() - ($1::text || ' days')::interval
+     )
+     RETURNING id`,
+    [keepDays]
+  );
+
+  const orphans = await query(
+    `DELETE FROM jobs
+     WHERE batch_id IS NULL
+       AND status IN ('done', 'failed')
+       AND updated_at < NOW() - ($1::text || ' days')::interval
+     RETURNING id`,
+    [keepDays]
+  );
+
+  return (batches.rowCount || 0) + (orphans.rowCount || 0);
+}
+
 function startScheduler() {
   cron.schedule("* * * * *", async () => {
     try {
@@ -126,7 +163,22 @@ function startScheduler() {
       console.error("scheduler error:", err.message);
     }
   });
+
+  // Daily: remove finished accounts and their history after retention window.
+  cron.schedule("15 3 * * *", async () => {
+    try {
+      const deleted = await purgeFinishedAccounts();
+      if (deleted > 0) {
+        console.log(
+          `finished cleanup: deleted ${deleted} job(s) finished more than ${HISTORY_RETENTION_DAYS} days ago`
+        );
+      }
+    } catch (err) {
+      console.error("finished cleanup error:", err.message);
+    }
+  });
+
   console.log("scheduler started (every minute)");
 }
 
-module.exports = { startScheduler, executeJob };
+module.exports = { startScheduler, executeJob, purgeFinishedAccounts };

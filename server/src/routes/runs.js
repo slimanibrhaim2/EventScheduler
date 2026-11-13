@@ -4,8 +4,8 @@ const { query } = require("../db");
 const router = express.Router();
 
 router.get("/", async (req, res) => {
-  const params = [];
-  const where = [];
+  const params = [req.appUser.id];
+  const where = ["j.user_id = $1"];
 
   if (req.query.game_id) {
     params.push(Number(req.query.game_id));
@@ -17,7 +17,7 @@ router.get("/", async (req, res) => {
     where.push(`SPLIT_PART(j.name, ' · ', 1) = $${params.length}`);
   }
 
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const whereSql = `WHERE ${where.join(" AND ")}`;
 
   const result = await query(
     `SELECT r.*,
@@ -46,12 +46,15 @@ router.get("/", async (req, res) => {
   res.json(result.rows);
 });
 
-router.get("/accounts", async (_req, res) => {
+router.get("/accounts", async (req, res) => {
   const result = await query(
     `SELECT DISTINCT SPLIT_PART(name, ' · ', 1) AS account_name
      FROM jobs
-     WHERE name IS NOT NULL AND name <> ''
-     ORDER BY account_name`
+     WHERE user_id = $1
+       AND name IS NOT NULL
+       AND name <> ''
+     ORDER BY account_name`,
+    [req.appUser.id]
   );
   res.json(result.rows.map((row) => row.account_name).filter(Boolean));
 });

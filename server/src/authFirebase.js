@@ -40,15 +40,33 @@ async function verifyIdToken(token) {
   return getAuth().verifyIdToken(token);
 }
 
-function adminEmails() {
-  return String(process.env.ADMIN_EMAILS || "")
+function splitEmails(value) {
+  return String(value || "")
     .split(",")
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean);
 }
 
+function ownerEmails() {
+  const owners = splitEmails(process.env.OWNER_EMAILS);
+  if (owners.length > 0) return owners;
+  // Fallback: first ADMIN_EMAILS entry is the owner.
+  const admins = splitEmails(process.env.ADMIN_EMAILS);
+  return admins.slice(0, 1);
+}
+
+function adminEmails() {
+  return splitEmails(process.env.ADMIN_EMAILS);
+}
+
+function isStaffRole(role) {
+  return role === "owner" || role === "admin";
+}
+
 module.exports = {
   initFirebaseAdmin,
   verifyIdToken,
+  ownerEmails,
   adminEmails,
+  isStaffRole,
 };

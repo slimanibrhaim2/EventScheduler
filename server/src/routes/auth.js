@@ -13,6 +13,7 @@ router.get("/users", requireAuth, requireApproved, requireAdmin, async (_req, re
     `SELECT id, uid, email, display_name, photo_url, role, status, created_at, last_login_at
      FROM app_users
      ORDER BY
+       CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
        CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
        created_at DESC`
   );
@@ -23,6 +24,7 @@ router.patch("/users/:id", requireAuth, requireApproved, requireAdmin, async (re
   const { status, role } = req.body || {};
   const allowedStatus = ["pending", "approved", "rejected"];
   const allowedRoles = ["admin", "user"];
+  const actor = req.appUser;
 
   if (status && !allowedStatus.includes(status)) {
     return res.status(400).json({ error: "Invalid status" });
@@ -32,21 +34,36 @@ router.patch("/users/:id", requireAuth, requireApproved, requireAdmin, async (re
   }
 
   const current = await query(`SELECT * FROM app_users WHERE id = $1`, [req.params.id]);
-  if (!current.rows[0]) return res.status(404).json({ error: "User not found" });
+  const target = current.rows[0];
+  if (!target) return res.status(404).json({ error: "User not found" });
 
-  // Prevent removing the last admin.
+  if (target.role === "owner") {
+    return res.status(403).json({ error: "The owner account cannot be changed" });
+  }
+
+  // Role changes (including approve-as-admin) are owner-only.
+  if (role && actor.role !== "owner") {
+    return res.status(403).json({ error: "Only the owner can change roles" });
+  }
+
+  if (status === "rejected" && target.role === "admin" && actor.role !== "owner") {
+    return res.status(403).json({ error: "Only the owner can reject an admin" });
+  }
+
+  // Keep at least one approved owner/admin.
   if (
-    current.rows[0].role === "admin" &&
-    ((role && role !== "admin") || (status && status !== "approved"))
+    (target.role === "admin" || target.role === "owner") &&
+    ((role && role !== target.role && role !== "admin" && role !== "owner") ||
+      (status && status !== "approved"))
   ) {
-    const admins = await query(
+    const staff = await query(
       `SELECT COUNT(*)::int AS count
        FROM app_users
-       WHERE role = 'admin' AND status = 'approved' AND id <> $1`,
+       WHERE role IN ('owner', 'admin') AND status = 'approved' AND id <> $1`,
       [req.params.id]
     );
-    if (admins.rows[0].count === 0) {
-      return res.status(400).json({ error: "Cannot remove the last approved admin" });
+    if (staff.rows[0].count === 0) {
+      return res.status(400).json({ error: "Cannot remove the last approved owner/admin" });
     }
   }
 

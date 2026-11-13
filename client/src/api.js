@@ -41,6 +41,7 @@ export const api = {
   deleteJob: (id) => request(`/api/jobs/${id}`, { method: "DELETE" }),
   finishedAccounts: () => request("/api/jobs/accounts/finished"),
   deleteBatch: (batchId) => request(`/api/jobs/batches/${batchId}`, { method: "DELETE" }),
+  deleteAllFinished: () => request("/api/jobs/accounts/finished", { method: "DELETE" }),
   proxies: () => request("/api/proxies"),
   createProxy: (body) => request("/api/proxies", { method: "POST", body: JSON.stringify(body) }),
   updateProxy: (id, body) => request(`/api/proxies/${id}`, { method: "PUT", body: JSON.stringify(body) }),

@@ -4,8 +4,11 @@ const { buildFleetProxyConfig, testProxyConnection } = require("../fleetProxy");
 
 const router = express.Router();
 
-router.get("/", async (_req, res) => {
-  const result = await query(`SELECT * FROM proxies ORDER BY created_at DESC`);
+router.get("/", async (req, res) => {
+  const result = await query(
+    `SELECT * FROM proxies WHERE user_id = $1 ORDER BY created_at DESC`,
+    [req.appUser.id]
+  );
   res.json(result.rows);
 });
 
@@ -14,11 +17,14 @@ router.post("/test", async (req, res) => {
 
   let proxy = null;
   if (proxy_id) {
-    const found = await query(`SELECT * FROM proxies WHERE id = $1`, [proxy_id]);
+    const found = await query(
+      `SELECT * FROM proxies WHERE id = $1 AND user_id = $2`,
+      [proxy_id, req.appUser.id]
+    );
     proxy = found.rows[0];
     if (!proxy) return res.status(404).json({ error: "Proxy not found" });
   } else if (fleet) {
-    proxy = await buildFleetProxyConfig(fleet, "proxy-check");
+    proxy = await buildFleetProxyConfig(fleet, "proxy-check", req.appUser.id);
   } else if (host && port) {
     proxy = {
       protocol: protocol || "http",
@@ -42,10 +48,18 @@ router.post("/", async (req, res) => {
   }
 
   const result = await query(
-    `INSERT INTO proxies (name, protocol, host, port, username, password)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO proxies (name, protocol, host, port, username, password, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [name, protocol || "http", host, Number(port), username || null, password || null]
+    [
+      name,
+      protocol || "http",
+      host,
+      Number(port),
+      username || null,
+      password || null,
+      req.appUser.id,
+    ]
   );
   res.status(201).json(result.rows[0]);
 });
@@ -58,16 +72,17 @@ router.put("/:id", async (req, res) => {
 
   const result = await query(
     `UPDATE proxies
-     SET name = $2,
-         protocol = $3,
-         host = $4,
-         port = $5,
-         username = $6,
-         password = $7
-     WHERE id = $1
+     SET name = $3,
+         protocol = $4,
+         host = $5,
+         port = $6,
+         username = $7,
+         password = $8
+     WHERE id = $1 AND user_id = $2
      RETURNING *`,
     [
       req.params.id,
+      req.appUser.id,
       name,
       protocol || "http",
       host,
@@ -81,7 +96,13 @@ router.put("/:id", async (req, res) => {
 });
 
 router.delete("/:id", async (req, res) => {
-  await query(`DELETE FROM proxies WHERE id = $1`, [req.params.id]);
+  const result = await query(
+    `DELETE FROM proxies WHERE id = $1 AND user_id = $2`,
+    [req.params.id, req.appUser.id]
+  );
+  if (result.rowCount === 0) {
+    return res.status(404).json({ error: "Proxy not found" });
+  }
   res.status(204).end();
 });
 

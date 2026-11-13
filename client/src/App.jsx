@@ -13,6 +13,7 @@ import {
 import { api } from "./api";
 import { useAuth } from "./auth";
 import { AuthLoadingScreen, LoginScreen, PendingScreen } from "./AuthScreens";
+import { exportUnfinishedEventsExcel } from "./exportScheduleExcel";
 import UsersPage from "./UsersPage";
 import {
   FLEET_COUNTRIES,
@@ -314,6 +315,15 @@ export default function App() {
     setMessage("");
   }, [location.pathname]);
 
+  useEffect(() => {
+    if (!message && !error) return undefined;
+    const id = window.setTimeout(() => {
+      setMessage("");
+      setError("");
+    }, 4000);
+    return () => window.clearTimeout(id);
+  }, [message, error]);
+
   if (loading) return <AuthLoadingScreen />;
   if (!firebaseUser) return <LoginScreen />;
   if (!appUser) {
@@ -344,10 +354,19 @@ export default function App() {
       <ConfirmModalHost />
       <header className="topbar">
         <Link to="/games" className="brand">
-          <span className="brand-mark">ES</span>
+          <span className="brand-mark" aria-hidden="true">
+            <svg className="brand-mark-icon" viewBox="0 0 64 64" fill="none">
+              <rect x="8" y="20" width="48" height="26" rx="12" stroke="currentColor" strokeWidth="3" />
+              <path d="M22 27.5v11M16.5 33h11" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+              <circle cx="42" cy="29" r="2.6" fill="currentColor" />
+              <circle cx="47.5" cy="33.5" r="2.6" fill="currentColor" />
+              <circle cx="42" cy="38" r="2.6" fill="currentColor" />
+              <circle cx="36.5" cy="33.5" r="2.6" fill="currentColor" />
+            </svg>
+          </span>
           <div>
             <strong>Event Scheduler</strong>
-            <div className="sub">Schedule requests with games, plans, and proxies</div>
+            <div className="sub">Games · plans · timed requests</div>
           </div>
         </Link>
         <nav className="topnav">
@@ -379,15 +398,6 @@ export default function App() {
           >
             Refresh
           </button>
-          <div className="user-chip" title={appUser?.email || ""}>
-            <div className="user-chip-text">
-              <strong>{appUser?.display_name || "Account"}</strong>
-              <span className="sub">{appUser?.email}</span>
-            </div>
-            <button type="button" className="btn" onClick={() => logout()}>
-              Sign out
-            </button>
-          </div>
         </nav>
       </header>
 
@@ -415,11 +425,23 @@ export default function App() {
           />
           <Route
             path="/games/new"
-            element={<GameFormPage games={games} onRefresh={load} {...flash} />}
+            element={
+              isAdmin ? (
+                <GameFormPage games={games} onRefresh={load} {...flash} />
+              ) : (
+                <Navigate to="/games" replace />
+              )
+            }
           />
           <Route
             path="/games/:id/edit"
-            element={<GameFormPage games={games} onRefresh={load} {...flash} />}
+            element={
+              isAdmin ? (
+                <GameFormPage games={games} onRefresh={load} {...flash} />
+              ) : (
+                <Navigate to="/games" replace />
+              )
+            }
           />
           <Route
             path="/jobs"
@@ -461,6 +483,7 @@ export default function App() {
 }
 
 function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) {
+  const { isAdmin } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const dailyBudget = Number(settings?.daily_time_spent) || 30000;
@@ -841,20 +864,29 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
       <div className="panel-head">
         <div>
           <h2>Games</h2>
-          <p className="sub">Open a game to edit it, or create a reusable plan with relative delays.</p>
+          <p className="sub">
+            Games are shared. Plans are yours only.
+            {isAdmin ? " Admins can also add or edit games." : ""}
+          </p>
         </div>
-        <Link className="btn primary" to="/games/new">
-          Add game
-        </Link>
+        {isAdmin && (
+          <Link className="btn primary" to="/games/new">
+            Add game
+          </Link>
+        )}
       </div>
 
       <div className="panel-body">
         {games.length === 0 && (
           <div className="empty">
             <p>No games yet.</p>
-            <Link className="btn primary" to="/games/new">
-              Add your first game
-            </Link>
+            {isAdmin ? (
+              <Link className="btn primary" to="/games/new">
+                Add your first game
+              </Link>
+            ) : (
+              <p className="sub">Ask an admin to add a game.</p>
+            )}
           </div>
         )}
 
@@ -877,15 +909,19 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
                     </span>
                   </button>
                   <div className="actions tight">
-                    <button className="btn" type="button" onClick={() => navigate(`/games/${game.id}/edit`)}>
-                      Edit
-                    </button>
+                    {isAdmin && (
+                      <button className="btn" type="button" onClick={() => navigate(`/games/${game.id}/edit`)}>
+                        Edit game
+                      </button>
+                    )}
                     <button className="btn" type="button" onClick={() => startCreatePlan(game)}>
                       Create plan
                     </button>
-                    <button className="btn danger" type="button" onClick={() => deleteGame(game)}>
-                      Delete
-                    </button>
+                    {isAdmin && (
+                      <button className="btn danger" type="button" onClick={() => deleteGame(game)}>
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1090,7 +1126,7 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
 }
 
 function SettingsPage({ settings, onRefresh, setError, setMessage }) {
-  const { appUser, logout, isAdmin } = useAuth();
+  const { appUser, logout, isAdmin, isOwner } = useAuth();
   const [form, setForm] = useState(settings);
   const [pasteLine, setPasteLine] = useState("");
   const [showPass, setShowPass] = useState(false);
@@ -1160,134 +1196,162 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
     }
   };
 
+  const roleLabel = isOwner ? "owner" : isAdmin ? "admin" : "user";
+
   return (
     <section className="panel settings-card settings-wide">
       <div className="panel-head">
         <div>
           <h2>Settings</h2>
-          <p className="sub">Plan timing, noise, and FleetProxy credentials used for every account.</p>
+          <p className="sub">Account, timing, and FleetProxy.</p>
         </div>
       </div>
-      <div className="panel-body settings-account">
-        <h3 className="settings-section-title">Account</h3>
-        <div className="settings-account-row">
-          <div>
-            <div className="sub">Signed in as</div>
-            <strong>{appUser?.email || "—"}</strong>
-            <div className="sub">
-              {appUser?.display_name ? `${appUser.display_name} · ` : ""}
-              {isAdmin ? "admin" : "user"} · {appUser?.status || "—"}
+
+      <div className="settings-sections">
+        <div className="settings-block">
+          <h3 className="settings-section-title">Account</h3>
+          <div className="settings-account-row">
+            <div>
+              <strong>{appUser?.email || "—"}</strong>
+              <div className="sub">
+                {appUser?.display_name ? `${appUser.display_name} · ` : ""}
+                {roleLabel}
+              </div>
+              <div className="settings-account-meta">
+                <div>
+                  <div className="sub">Signed up</div>
+                  <div>
+                    {appUser?.created_at ? new Date(appUser.created_at).toLocaleString() : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div className="sub">Last login</div>
+                  <div>
+                    {appUser?.last_login_at
+                      ? new Date(appUser.last_login_at).toLocaleString()
+                      : "—"}
+                  </div>
+                </div>
+              </div>
             </div>
+            <button type="button" className="btn btn-danger" onClick={() => logout()}>
+              Sign out
+            </button>
           </div>
-          <button type="button" className="btn btn-danger" onClick={() => logout()}>
-            Sign out
-          </button>
         </div>
+
+        <form className="settings-block" onSubmit={save}>
+          <h3 className="settings-section-title">Timing</h3>
+          <div className="settings-grid">
+            <label>
+              <span>Timezone</span>
+              <input
+                value={form.timezone || ""}
+                onChange={(e) => patchForm({ timezone: e.target.value })}
+                placeholder="local"
+              />
+            </label>
+            <label>
+              <span>Daily time_spent (sec)</span>
+              <input
+                type="number"
+                min="1"
+                value={form.daily_time_spent || "30000"}
+                onChange={(e) => patchForm({ daily_time_spent: e.target.value })}
+              />
+            </label>
+            <label>
+              <span>Noise ± (sec)</span>
+              <input
+                type="number"
+                min="0"
+                value={form.time_spent_noise || "300"}
+                onChange={(e) => patchForm({ time_spent_noise: e.target.value })}
+              />
+            </label>
+          </div>
+
+          <h3 className="settings-section-title">FleetProxy</h3>
+          <label>
+            <span>Paste proxy line</span>
+            <div className="plan-picker">
+              <input
+                value={pasteLine}
+                onChange={(e) => setPasteLine(e.target.value)}
+                placeholder="host:port:user:pass"
+              />
+              <button type="button" className="btn primary" onClick={applyPasteLine}>
+                Apply & save
+              </button>
+            </div>
+          </label>
+          <details className="settings-details">
+            <summary>Example format</summary>
+            <pre className="fleet-example">
+              residential-v2.fleetproxy.io:5000:r_97ff38e1a1-country-US-region-alabama:567ca5a56b
+            </pre>
+          </details>
+
+          <div className="settings-grid">
+            <label>
+              <span>Host</span>
+              <input
+                value={form.fleet_host || ""}
+                onChange={(e) => patchForm({ fleet_host: e.target.value })}
+                placeholder="residential-v2.fleetproxy.io"
+              />
+            </label>
+            <label>
+              <span>Port</span>
+              <input
+                value={form.fleet_port || ""}
+                onChange={(e) => patchForm({ fleet_port: e.target.value })}
+                placeholder="5000"
+              />
+            </label>
+            <label>
+              <span>Username</span>
+              <input
+                value={form.fleet_user || ""}
+                onChange={(e) => patchForm({ fleet_user: e.target.value })}
+                placeholder="r_97ff38e1a1"
+              />
+            </label>
+            <label>
+              <span>Protocol</span>
+              <select
+                value={form.fleet_protocol || "http"}
+                onChange={(e) => patchForm({ fleet_protocol: e.target.value })}
+              >
+                <option value="http">http / https</option>
+                <option value="socks5">socks5</option>
+              </select>
+            </label>
+          </div>
+
+          <label>
+            <span>Password</span>
+            <div className="plan-picker">
+              <input
+                type={showPass ? "text" : "password"}
+                value={form.fleet_pass || ""}
+                onChange={(e) => patchForm({ fleet_pass: e.target.value })}
+                placeholder="proxy password"
+                autoComplete="new-password"
+              />
+              <button type="button" className="btn" onClick={() => setShowPass((v) => !v)}>
+                {showPass ? "Hide" : "Show"}
+              </button>
+            </div>
+          </label>
+
+          <div className="actions">
+            <button className="btn primary" type="submit">
+              Save settings
+            </button>
+          </div>
+        </form>
       </div>
-      <form className="panel-body" onSubmit={save}>
-        <label>Timezone label</label>
-        <input
-          value={form.timezone || ""}
-          onChange={(e) => patchForm({ timezone: e.target.value })}
-          placeholder="local"
-        />
-        <label>Daily time_spent budget (seconds)</label>
-        <input
-          type="number"
-          min="1"
-          value={form.daily_time_spent || "30000"}
-          onChange={(e) => patchForm({ daily_time_spent: e.target.value })}
-        />
-        <p className="sub">
-          Each plan day adds this many seconds. If a day has multiple events, that amount is divided between them, then
-          added to the previous time_spent.
-        </p>
-        <label>time_spent noise (± seconds)</label>
-        <input
-          type="number"
-          min="0"
-          value={form.time_spent_noise || "300"}
-          onChange={(e) => patchForm({ time_spent_noise: e.target.value })}
-        />
-        <p className="sub">Each scheduled request gets a random offset in this range so time_spent is not identical every run.</p>
-
-        <h3 className="settings-section-title">FleetProxy</h3>
-        <div className="fleet-help">
-          <p className="sub">
-            From your screenshot, copy <strong>one full generated line</strong> (not only the short username):
-          </p>
-          <pre className="fleet-example">
-            residential-v2.fleetproxy.io:5000:r_97ff38e1a1-country-US-region-alabama:567ca5a56b
-          </pre>
-          <p className="sub">
-            Use host <code>residential-v2.fleetproxy.io</code> (not <code>v2.fleetproxy.io</code>). We store only the
-            base user <code>r_97ff38e1a1</code> + password. Country/state/city are chosen later on New job and added to
-            the username when sending.
-          </p>
-        </div>
-        <label>Paste generated proxy line</label>
-        <div className="plan-picker">
-          <input
-            value={pasteLine}
-            onChange={(e) => setPasteLine(e.target.value)}
-            placeholder="residential-v2.fleetproxy.io:5000:r_xxxx-country-US-region-alabama:password"
-          />
-          <button type="button" className="btn primary" onClick={applyPasteLine}>
-            Apply & save
-          </button>
-        </div>
-        <div className="row">
-          <div>
-            <label>Host</label>
-            <input
-              value={form.fleet_host || ""}
-              onChange={(e) => patchForm({ fleet_host: e.target.value })}
-              placeholder="residential-v2.fleetproxy.io"
-            />
-          </div>
-          <div>
-            <label>Port</label>
-            <input
-              value={form.fleet_port || ""}
-              onChange={(e) => patchForm({ fleet_port: e.target.value })}
-              placeholder="5000"
-            />
-          </div>
-        </div>
-        <label>Username (base only)</label>
-        <input
-          value={form.fleet_user || ""}
-          onChange={(e) => patchForm({ fleet_user: e.target.value })}
-          placeholder="r_97ff38e1a1"
-        />
-        <label>Password</label>
-        <div className="plan-picker">
-          <input
-            type={showPass ? "text" : "password"}
-            value={form.fleet_pass || ""}
-            onChange={(e) => patchForm({ fleet_pass: e.target.value })}
-            placeholder="proxy password"
-            autoComplete="new-password"
-          />
-          <button type="button" className="btn" onClick={() => setShowPass((v) => !v)}>
-            {showPass ? "Hide" : "Show"}
-          </button>
-        </div>
-        <label>Protocol</label>
-        <select
-          value={form.fleet_protocol || "http"}
-          onChange={(e) => patchForm({ fleet_protocol: e.target.value })}
-        >
-          <option value="http">http / https</option>
-          <option value="socks5">socks5</option>
-        </select>
-
-        <div className="actions">
-          <button className="btn primary" type="submit">
-            Save settings
-          </button>
-        </div>
-      </form>
     </section>
   );
 }
@@ -1712,9 +1776,7 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
         <div>
           <h2>New job</h2>
           <p className="sub">
-            Upload one request file. Path is rewritten to /session or /event. Every event is preceded by a session
-            with a random 30s–60s gap. If same-day events are more than 20 minutes apart, a new session is sent before
-            the next event. time_spent gets small random noise.
+            Upload one session or event request file.
           </p>
         </div>
         <Link className="btn" to="/jobs/scheduled">
@@ -1931,7 +1993,7 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
               </p>
             )}
             <p className="sub">
-              Same as the FleetProxy Generator: pick location + rotation. Check the proxy before scheduling — schedule is
+              Pick location + rotation. Check the proxy before scheduling — schedule is
               blocked until the test succeeds.
             </p>
             <div className="row">
@@ -2223,7 +2285,7 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
   const [gameFilter, setGameFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
-  const [dateFilter, setDateFilter] = useState("today");
+  const [dateFilter, setDateFilter] = useState("all");
 
   const accountOptions = useMemo(() => {
     const names = new Set(jobs.map(jobAccountName).filter(Boolean));
@@ -2342,6 +2404,24 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
           <button type="button" className="btn" onClick={() => onRefresh().catch((e) => setError(e.message))}>
             Refresh
           </button>
+          <button
+            type="button"
+            className="btn btn-info"
+            onClick={() => {
+              exportUnfinishedEventsExcel(
+                jobs,
+                `unfinished-accounts-${new Date().toISOString().slice(0, 10)}.xlsx`
+              )
+                .then(() =>
+                  setMessage(
+                    "Excel exported: yellow = done, red = failed, blue date = scheduled."
+                  )
+                )
+                .catch((err) => setError(err.message));
+            }}
+          >
+            Export Excel
+          </button>
           <button type="button" className="btn" onClick={() => setShowFull((v) => !v)}>
             {showFull ? "Show next only" : "Show full schedule"}
           </button>
@@ -2390,10 +2470,10 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
           <div>
             <label>Date</label>
             <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
+              <option value="all">All dates</option>
               <option value="today">Today</option>
               <option value="yesterday">Yesterday</option>
               <option value="7d">Last 7 days</option>
-              <option value="all">All dates</option>
             </select>
           </div>
         </div>
@@ -2585,9 +2665,38 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
           <h2>Finished accounts</h2>
           <p className="sub">Accounts whose plan jobs are all done or failed. Auto-refreshes every 5s.</p>
         </div>
-        <button type="button" className="btn" onClick={() => loadAccounts()}>
-          Refresh
-        </button>
+        <div className="actions tight">
+          <button type="button" className="btn" onClick={() => loadAccounts()}>
+            Refresh
+          </button>
+          {accounts.length > 0 && (
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={async () => {
+                if (
+                  !(await confirmAction(
+                    `Delete all ${accounts.length} finished account(s)? This removes their jobs and history.`,
+                    { title: "Delete all finished", confirmLabel: "Delete all", danger: true }
+                  ))
+                ) {
+                  return;
+                }
+                try {
+                  const result = await api.deleteAllFinished();
+                  setMessage(
+                    `Deleted ${result.deleted_accounts} finished account(s) (${result.deleted_jobs} jobs).`
+                  );
+                  await Promise.all([loadAccounts(), onRefresh()]);
+                } catch (err) {
+                  setError(err.message);
+                }
+              }}
+            >
+              Delete all
+            </button>
+          )}
+        </div>
       </div>
       <div className="panel-body">
         {loading && <p className="sub">Loading…</p>}
@@ -3108,7 +3217,9 @@ function HistoryPage({ games }) {
       <div className="panel-head">
         <div>
           <h2>Run history</h2>
-          <p className="sub">Same filters as Scheduled (account, game, type, result, date). Auto-refreshes every 5s.</p>
+          <p className="sub">
+            Finished accounts are removed automatically 20 days after they complete.
+          </p>
         </div>
         <button type="button" className="btn" onClick={() => loadRuns().catch((err) => setError(err.message))}>
           Refresh

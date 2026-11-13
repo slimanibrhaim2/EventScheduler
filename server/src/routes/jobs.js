@@ -30,7 +30,17 @@ function randomSessionEventGapMs() {
   return 30000 + Math.floor(Math.random() * 30001);
 }
 
-async function getNoiseSetting() {
+async function getNoiseSetting(userId) {
+  if (userId) {
+    const user = await query(
+      `SELECT value FROM user_settings WHERE user_id = $1 AND key = 'time_spent_noise'`,
+      [userId]
+    );
+    if (user.rows[0]) {
+      const value = Number(user.rows[0].value);
+      if (Number.isFinite(value)) return value;
+    }
+  }
   const result = await query(`SELECT value FROM settings WHERE key = 'time_spent_noise'`);
   const value = Number(result.rows[0]?.value);
   return Number.isFinite(value) ? value : 300;
@@ -41,6 +51,7 @@ async function insertJob({
   filled,
   runAt,
   proxy_id,
+  user_id,
   game_id,
   plan_id,
   plan_step_id,
@@ -49,8 +60,8 @@ async function insertJob({
 }) {
   const result = await query(
     `INSERT INTO jobs
-      (name, method, url, headers, body, run_at, proxy_id, game_id, plan_id, plan_step_id, batch_id, request_kind)
-     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12)
+      (name, method, url, headers, body, run_at, proxy_id, user_id, game_id, plan_id, plan_step_id, batch_id, request_kind)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
     [
       name,
@@ -60,6 +71,7 @@ async function insertJob({
       filled.body || null,
       runAt.toISOString(),
       proxy_id || null,
+      user_id || null,
       game_id,
       plan_id,
       plan_step_id || null,
@@ -70,7 +82,7 @@ async function insertJob({
   return result.rows[0];
 }
 
-router.get("/", async (_req, res) => {
+router.get("/", async (req, res) => {
   const result = await query(
     `SELECT j.*, p.name AS proxy_name, g.name AS game_name, pl.name AS plan_name,
        COALESCE(
@@ -97,7 +109,9 @@ router.get("/", async (_req, res) => {
        ORDER BY started_at DESC
        LIMIT 1
      ) latest ON TRUE
-     ORDER BY j.run_at DESC`
+     WHERE j.user_id = $1
+     ORDER BY j.run_at DESC`,
+    [req.appUser.id]
   );
   res.json(result.rows);
 });
@@ -116,9 +130,20 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "name, url, and run_at are required" });
   }
 
+  let resolvedProxyId = proxy_id || null;
+  if (resolvedProxyId) {
+    const ownedProxy = await query(
+      `SELECT id FROM proxies WHERE id = $1 AND user_id = $2`,
+      [resolvedProxyId, req.appUser.id]
+    );
+    if (!ownedProxy.rows[0]) {
+      return res.status(404).json({ error: "Proxy not found" });
+    }
+  }
+
   const result = await query(
-    `INSERT INTO jobs (name, method, url, headers, body, run_at, proxy_id, request_kind)
-     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+    `INSERT INTO jobs (name, method, url, headers, body, run_at, proxy_id, user_id, request_kind)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
      RETURNING *`,
     [
       name,
@@ -127,7 +152,8 @@ router.post("/", async (req, res) => {
       JSON.stringify(headers || {}),
       body || null,
       run_at,
-      proxy_id || null,
+      resolvedProxyId,
+      req.appUser.id,
       requestKindFromUrl(url),
     ]
   );
@@ -140,6 +166,8 @@ router.post("/from-plan", async (req, res) => {
     return res.status(400).json({ error: "name, game_id, plan_id, and request file text are required" });
   }
 
+  const userId = req.appUser.id;
+
   let parsed;
   try {
     parsed = parseRawHttp(raw);
@@ -151,8 +179,8 @@ router.post("/from-plan", async (req, res) => {
     `SELECT p.*, g.name AS game_name
      FROM plans p
      JOIN games g ON g.id = p.game_id
-     WHERE p.id = $1 AND p.game_id = $2`,
-    [plan_id, game_id]
+     WHERE p.id = $1 AND p.game_id = $2 AND p.user_id = $3`,
+    [plan_id, game_id, userId]
   );
   if (!planResult.rows[0]) {
     return res.status(404).json({ error: "Plan not found for this game" });
@@ -161,9 +189,10 @@ router.post("/from-plan", async (req, res) => {
   const accountName = String(name).trim();
   const existingAccount = await query(
     `SELECT id FROM jobs
-     WHERE LOWER(SPLIT_PART(name, ' · ', 1)) = LOWER($1)
+     WHERE user_id = $1
+       AND LOWER(SPLIT_PART(name, ' · ', 1)) = LOWER($2)
      LIMIT 1`,
-    [accountName]
+    [userId, accountName]
   );
   if (existingAccount.rows[0]) {
     return res.status(400).json({
@@ -172,8 +201,17 @@ router.post("/from-plan", async (req, res) => {
   }
 
   let resolvedProxyId = proxy_id || null;
+  if (resolvedProxyId) {
+    const ownedProxy = await query(
+      `SELECT id FROM proxies WHERE id = $1 AND user_id = $2`,
+      [resolvedProxyId, userId]
+    );
+    if (!ownedProxy.rows[0]) {
+      return res.status(404).json({ error: "Proxy not found" });
+    }
+  }
   if (fleet && fleet.enabled !== false && (fleet.country || fleet.use_fleet)) {
-    const createdProxy = await createFleetProxyForAccount(accountName, fleet);
+    const createdProxy = await createFleetProxyForAccount(accountName, fleet, userId);
     resolvedProxyId = createdProxy.id;
   }
 
@@ -191,7 +229,7 @@ router.post("/from-plan", async (req, res) => {
     return res.status(400).json({ error: "Plan has no steps" });
   }
 
-  const noise = await getNoiseSetting();
+  const noise = await getNoiseSetting(userId);
   const batchId = crypto.randomUUID();
   const startedAt = new Date();
   const created = [];
@@ -223,6 +261,7 @@ router.post("/from-plan", async (req, res) => {
       filled: sessionFilled,
       runAt,
       proxy_id: resolvedProxyId,
+      user_id: userId,
       game_id,
       plan_id,
       plan_step_id: null,
@@ -322,6 +361,7 @@ router.post("/from-plan", async (req, res) => {
           filled: eventFilled,
           runAt: eventAt,
           proxy_id: resolvedProxyId,
+          user_id: userId,
           game_id,
           plan_id,
           plan_step_id: step.id,
@@ -340,7 +380,7 @@ router.post("/from-plan", async (req, res) => {
   });
 });
 
-router.get("/accounts/finished", async (_req, res) => {
+router.get("/accounts/finished", async (req, res) => {
   const result = await query(
     `SELECT
        j.batch_id,
@@ -359,15 +399,45 @@ router.get("/accounts/finished", async (_req, res) => {
      LEFT JOIN games g ON g.id = j.game_id
      LEFT JOIN plans pl ON pl.id = j.plan_id
      WHERE j.batch_id IS NOT NULL
+       AND j.user_id = $1
      GROUP BY j.batch_id
      HAVING COUNT(*) FILTER (WHERE j.status NOT IN ('done', 'failed')) = 0
-     ORDER BY MAX(j.updated_at) DESC`
+     ORDER BY MAX(j.updated_at) DESC`,
+    [req.appUser.id]
   );
   res.json(result.rows);
 });
 
+router.delete("/accounts/finished", async (req, res) => {
+  const result = await query(
+    `DELETE FROM jobs
+     WHERE user_id = $1
+       AND batch_id IN (
+         SELECT finished.batch_id
+         FROM (
+           SELECT j.batch_id
+           FROM jobs j
+           WHERE j.user_id = $1
+             AND j.batch_id IS NOT NULL
+           GROUP BY j.batch_id
+           HAVING COUNT(*) FILTER (WHERE j.status NOT IN ('done', 'failed')) = 0
+         ) finished
+       )
+     RETURNING batch_id`,
+    [req.appUser.id]
+  );
+  const batches = new Set(result.rows.map((row) => row.batch_id));
+  res.json({ deleted_jobs: result.rowCount || 0, deleted_accounts: batches.size });
+});
+
 router.delete("/batches/:batchId", async (req, res) => {
-  await query(`DELETE FROM jobs WHERE batch_id = $1`, [req.params.batchId]);
+  const result = await query(
+    `DELETE FROM jobs WHERE batch_id = $1 AND user_id = $2`,
+    [req.params.batchId, req.appUser.id]
+  );
+  if (result.rowCount === 0) {
+    return res.status(404).json({ error: "Batch not found" });
+  }
   res.status(204).end();
 });
 
@@ -376,25 +446,34 @@ router.post("/:id/run-now", async (req, res) => {
     `SELECT j.*, pr.protocol, pr.host, pr.port, pr.username, pr.password
      FROM jobs j
      LEFT JOIN proxies pr ON pr.id = j.proxy_id
-     WHERE j.id = $1`,
-    [req.params.id]
+     WHERE j.id = $1 AND j.user_id = $2`,
+    [req.params.id, req.appUser.id]
   );
   if (!found.rows[0]) {
     return res.status(404).json({ error: "Job not found" });
   }
 
   await query(
-    `UPDATE jobs SET status = 'running', updated_at = NOW() WHERE id = $1`,
-    [req.params.id]
+    `UPDATE jobs SET status = 'running', updated_at = NOW() WHERE id = $1 AND user_id = $2`,
+    [req.params.id, req.appUser.id]
   );
   const job = { ...found.rows[0], id: Number(req.params.id) };
   await executeJob(job);
-  const updated = await query(`SELECT * FROM jobs WHERE id = $1`, [req.params.id]);
+  const updated = await query(
+    `SELECT * FROM jobs WHERE id = $1 AND user_id = $2`,
+    [req.params.id, req.appUser.id]
+  );
   res.json(updated.rows[0]);
 });
 
 router.delete("/:id", async (req, res) => {
-  await query(`DELETE FROM jobs WHERE id = $1`, [req.params.id]);
+  const result = await query(
+    `DELETE FROM jobs WHERE id = $1 AND user_id = $2`,
+    [req.params.id, req.appUser.id]
+  );
+  if (result.rowCount === 0) {
+    return res.status(404).json({ error: "Job not found" });
+  }
   res.status(204).end();
 });
 

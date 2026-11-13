@@ -1,12 +1,18 @@
 const { query } = require("../db");
-const { verifyIdToken, adminEmails } = require("../authFirebase");
+const { verifyIdToken, ownerEmails, adminEmails, isStaffRole } = require("../authFirebase");
+
+function bootstrapRole(email) {
+  if (email && ownerEmails().includes(email)) return "owner";
+  if (email && adminEmails().includes(email)) return "admin";
+  return null;
+}
 
 async function upsertAppUser(decoded) {
   const uid = decoded.uid;
   const email = String(decoded.email || "").toLowerCase();
   const name = decoded.name || decoded.email || "User";
   const photoUrl = decoded.picture || null;
-  const isBootstrapAdmin = email && adminEmails().includes(email);
+  const bootRole = bootstrapRole(email);
 
   const existing = await query(`SELECT * FROM app_users WHERE uid = $1`, [uid]);
   if (existing.rows[0]) {
@@ -17,16 +23,17 @@ async function upsertAppUser(decoded) {
            photo_url = $4,
            last_login_at = NOW(),
            role = CASE
-             WHEN $5 THEN 'admin'
+             WHEN $5 = 'owner' THEN 'owner'
+             WHEN $5 = 'admin' AND role <> 'owner' THEN 'admin'
              ELSE role
            END,
            status = CASE
-             WHEN $5 THEN 'approved'
+             WHEN $5 IS NOT NULL THEN 'approved'
              ELSE status
            END
        WHERE uid = $1
        RETURNING *`,
-      [uid, email, name, photoUrl, isBootstrapAdmin]
+      [uid, email, name, photoUrl, bootRole]
     );
     return result.rows[0];
   }
@@ -40,8 +47,8 @@ async function upsertAppUser(decoded) {
       email,
       name,
       photoUrl,
-      isBootstrapAdmin ? "admin" : "user",
-      isBootstrapAdmin ? "approved" : "pending",
+      bootRole || "user",
+      bootRole ? "approved" : "pending",
     ]
   );
   return result.rows[0];
@@ -83,8 +90,15 @@ function requireApproved(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  if (!req.appUser || req.appUser.role !== "admin" || req.appUser.status !== "approved") {
+  if (!req.appUser || !isStaffRole(req.appUser.role) || req.appUser.status !== "approved") {
     return res.status(403).json({ error: "Admin only" });
+  }
+  next();
+}
+
+function requireOwner(req, res, next) {
+  if (!req.appUser || req.appUser.role !== "owner" || req.appUser.status !== "approved") {
+    return res.status(403).json({ error: "Owner only" });
   }
   next();
 }
@@ -93,5 +107,7 @@ module.exports = {
   requireAuth,
   requireApproved,
   requireAdmin,
+  requireOwner,
   upsertAppUser,
+  isStaffRole,
 };

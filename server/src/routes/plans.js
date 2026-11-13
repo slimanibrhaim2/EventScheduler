@@ -14,13 +14,13 @@ function normalizeDelay(step, index) {
   };
 }
 
-async function getPlan(id) {
+async function getPlan(id, userId) {
   const plan = await query(
     `SELECT p.*, g.name AS game_name
      FROM plans p
      JOIN games g ON g.id = p.game_id
-     WHERE p.id = $1`,
-    [id]
+     WHERE p.id = $1 AND p.user_id = $2`,
+    [id, userId]
   );
   if (!plan.rows[0]) return null;
 
@@ -38,16 +38,17 @@ async function getPlan(id) {
 }
 
 router.get("/", async (req, res) => {
-  const params = [];
+  const params = [req.appUser.id];
   let sql = `
     SELECT p.*, g.name AS game_name,
       (SELECT COUNT(*)::int FROM plan_steps s WHERE s.plan_id = p.id) AS step_count
     FROM plans p
     JOIN games g ON g.id = p.game_id
+    WHERE p.user_id = $1
   `;
   if (req.query.game_id) {
     params.push(req.query.game_id);
-    sql += ` WHERE p.game_id = $1`;
+    sql += ` AND p.game_id = $2`;
   }
   sql += ` ORDER BY p.created_at DESC`;
   const result = await query(sql, params);
@@ -55,7 +56,7 @@ router.get("/", async (req, res) => {
 });
 
 router.get("/:id", async (req, res) => {
-  const plan = await getPlan(req.params.id);
+  const plan = await getPlan(req.params.id, req.appUser.id);
   if (!plan) return res.status(404).json({ error: "Plan not found" });
   res.json(plan);
 });
@@ -75,17 +76,20 @@ router.post("/", async (req, res) => {
   if (!game.rows[0]) return res.status(404).json({ error: "Game not found" });
 
   const planName = String(name).trim();
+  const userId = req.appUser.id;
   const duplicate = await query(
-    `SELECT id FROM plans WHERE game_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`,
-    [game_id, planName]
+    `SELECT id FROM plans
+     WHERE user_id = $1 AND game_id = $2 AND LOWER(name) = LOWER($3)
+     LIMIT 1`,
+    [userId, game_id, planName]
   );
   if (duplicate.rows[0]) {
     return res.status(400).json({ error: `A plan named "${planName}" already exists for this game` });
   }
 
   const created = await query(
-    `INSERT INTO plans (game_id, name) VALUES ($1, $2) RETURNING *`,
-    [game_id, planName]
+    `INSERT INTO plans (game_id, name, user_id) VALUES ($1, $2, $3) RETURNING *`,
+    [game_id, planName, userId]
   );
   const planId = created.rows[0].id;
 
@@ -106,17 +110,21 @@ router.post("/", async (req, res) => {
     );
   }
 
-  res.status(201).json(await getPlan(planId));
+  res.status(201).json(await getPlan(planId, userId));
 });
 
 router.put("/:id", async (req, res) => {
   const planId = Number(req.params.id);
+  const userId = req.appUser.id;
   const { name, steps } = req.body;
   if (!name || !String(name).trim()) {
     return res.status(400).json({ error: "plan name is required" });
   }
 
-  const existing = await query(`SELECT * FROM plans WHERE id = $1`, [planId]);
+  const existing = await query(
+    `SELECT * FROM plans WHERE id = $1 AND user_id = $2`,
+    [planId, userId]
+  );
   if (!existing.rows[0]) return res.status(404).json({ error: "Plan not found" });
 
   const cleaned = (Array.isArray(steps) ? steps : []).map(normalizeDelay).filter((step) => step.variable_id);
@@ -127,15 +135,19 @@ router.put("/:id", async (req, res) => {
   const planName = String(name).trim();
   const duplicate = await query(
     `SELECT id FROM plans
-     WHERE game_id = $1 AND LOWER(name) = LOWER($2) AND id <> $3
+     WHERE user_id = $1 AND game_id = $2 AND LOWER(name) = LOWER($3) AND id <> $4
      LIMIT 1`,
-    [existing.rows[0].game_id, planName, planId]
+    [userId, existing.rows[0].game_id, planName, planId]
   );
   if (duplicate.rows[0]) {
     return res.status(400).json({ error: `A plan named "${planName}" already exists for this game` });
   }
 
-  await query(`UPDATE plans SET name = $2 WHERE id = $1`, [planId, planName]);
+  await query(`UPDATE plans SET name = $3 WHERE id = $1 AND user_id = $2`, [
+    planId,
+    userId,
+    planName,
+  ]);
   await query(`DELETE FROM plan_steps WHERE plan_id = $1`, [planId]);
 
   for (const step of cleaned) {
@@ -155,11 +167,17 @@ router.put("/:id", async (req, res) => {
     );
   }
 
-  res.json(await getPlan(planId));
+  res.json(await getPlan(planId, userId));
 });
 
 router.delete("/:id", async (req, res) => {
-  await query(`DELETE FROM plans WHERE id = $1`, [req.params.id]);
+  const result = await query(
+    `DELETE FROM plans WHERE id = $1 AND user_id = $2`,
+    [req.params.id, req.appUser.id]
+  );
+  if (result.rowCount === 0) {
+    return res.status(404).json({ error: "Plan not found" });
+  }
   res.status(204).end();
 });
 

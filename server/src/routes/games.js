@@ -1,5 +1,6 @@
 const express = require("express");
 const { query } = require("../db");
+const { requireAdmin } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -32,7 +33,7 @@ router.get("/:id", async (req, res) => {
   res.json(game);
 });
 
-router.post("/", async (req, res) => {
+router.post("/", requireAdmin, async (req, res) => {
   const { name, variables } = req.body;
   if (!name || !String(name).trim()) {
     return res.status(400).json({ error: "Game name is required" });
@@ -68,7 +69,7 @@ router.post("/", async (req, res) => {
   res.status(201).json(await getGameWithVariables(gameId));
 });
 
-router.put("/:id", async (req, res) => {
+router.put("/:id", requireAdmin, async (req, res) => {
   const gameId = Number(req.params.id);
   const { name, variables } = req.body;
   if (!name || !String(name).trim()) {
@@ -129,7 +130,7 @@ router.put("/:id", async (req, res) => {
   res.json(await getGameWithVariables(gameId));
 });
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireAdmin, async (req, res) => {
   await query(`DELETE FROM games WHERE id = $1`, [req.params.id]);
   res.status(204).end();
 });

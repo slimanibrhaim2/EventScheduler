@@ -32,6 +32,19 @@ async function migrate() {
     ALTER TABLE jobs ADD COLUMN IF NOT EXISTS plan_step_id INTEGER;
     ALTER TABLE jobs ADD COLUMN IF NOT EXISTS batch_id TEXT;
     ALTER TABLE jobs ADD COLUMN IF NOT EXISTS request_kind TEXT;
+    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES app_users(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS jobs_user_id_idx ON jobs (user_id, run_at DESC);
+
+    -- Older jobs without an owner go to the first owner/admin account.
+    UPDATE jobs
+    SET user_id = (
+      SELECT id FROM app_users
+      WHERE status = 'approved'
+      ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, id
+      LIMIT 1
+    )
+    WHERE user_id IS NULL
+      AND EXISTS (SELECT 1 FROM app_users WHERE status = 'approved');
 
     CREATE TABLE IF NOT EXISTS app_users (
       id SERIAL PRIMARY KEY,
@@ -57,6 +70,40 @@ async function migrate() {
       ('fleet_pass', ''),
       ('fleet_protocol', 'http')
     ON CONFLICT (key) DO NOTHING;
+
+    ALTER TABLE proxies ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES app_users(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS proxies_user_id_idx ON proxies (user_id, created_at DESC);
+
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES app_users(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS plans_user_id_idx ON plans (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, key)
+    );
+
+    UPDATE proxies
+    SET user_id = (
+      SELECT id FROM app_users
+      WHERE status = 'approved'
+      ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, id
+      LIMIT 1
+    )
+    WHERE user_id IS NULL
+      AND EXISTS (SELECT 1 FROM app_users WHERE status = 'approved');
+
+    UPDATE plans
+    SET user_id = (
+      SELECT id FROM app_users
+      WHERE status = 'approved'
+      ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, id
+      LIMIT 1
+    )
+    WHERE user_id IS NULL
+      AND EXISTS (SELECT 1 FROM app_users WHERE status = 'approved');
   `);
 }
 
