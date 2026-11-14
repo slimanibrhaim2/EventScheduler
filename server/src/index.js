@@ -13,9 +13,23 @@ const runs = require("./routes/runs");
 const games = require("./routes/games");
 const plans = require("./routes/plans");
 const settings = require("./routes/settings");
+const stats = require("./routes/stats");
 
 const app = express();
-app.use(cors({ origin: "http://localhost:5173" }));
+const corsOrigins = String(process.env.CORS_ORIGINS || "http://localhost:5173")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin || corsOrigins.includes(origin) || corsOrigins.includes("*")) {
+        return cb(null, true);
+      }
+      return cb(new Error(`CORS blocked for origin: ${origin}`));
+    },
+  })
+);
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
@@ -43,6 +57,7 @@ app.use("/api/runs", ...protect, asyncRouter(runs));
 app.use("/api/games", ...protect, asyncRouter(games));
 app.use("/api/plans", ...protect, asyncRouter(plans));
 app.use("/api/settings", ...protect, asyncRouter(settings));
+app.use("/api/stats", ...protect, asyncRouter(stats));
 
 app.use((err, _req, res, _next) => {
   console.error(err);

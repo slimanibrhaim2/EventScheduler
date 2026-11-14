@@ -1,7 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
+import {
+  onAuthStateChanged,
+  onIdTokenChanged,
+  signInWithPopup,
+  signOut,
+} from "firebase/auth";
 import { auth, firebaseConfigured, firebaseMissingKeys, googleProvider } from "./firebase";
-import { api, setAuthToken } from "./api";
+import { api, setAuthToken, setAuthTokenRefresher } from "./api";
 
 const AuthContext = createContext(null);
 
@@ -16,6 +21,27 @@ export function AuthProvider({ children }) {
       setLoading(false);
       return undefined;
     }
+
+    setAuthTokenRefresher(async () => {
+      if (!auth.currentUser) return null;
+      const token = await auth.currentUser.getIdToken(true);
+      setAuthToken(token);
+      return token;
+    });
+
+    // Keep the API Bearer token in sync when Firebase refreshes the ID token (~hourly).
+    const unsubToken = onIdTokenChanged(auth, async (user) => {
+      if (!user) {
+        setAuthToken(null);
+        return;
+      }
+      try {
+        const token = await user.getIdToken();
+        setAuthToken(token);
+      } catch {
+        // Ignore; next API call will retry via refresher.
+      }
+    });
 
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
@@ -45,7 +71,11 @@ export function AuthProvider({ children }) {
       }
     });
 
-    return () => unsub();
+    return () => {
+      unsub();
+      unsubToken();
+      setAuthTokenRefresher(null);
+    };
   }, []);
 
   const value = useMemo(
@@ -81,6 +111,7 @@ export function AuthProvider({ children }) {
         setAuthToken(token);
         const me = await api.me();
         setAppUser(me.user);
+        setError("");
         return me.user;
       },
       async logout() {

@@ -15,6 +15,7 @@ import { useAuth } from "./auth";
 import { AuthLoadingScreen, LoginScreen, PendingScreen } from "./AuthScreens";
 import { exportUnfinishedEventsExcel } from "./exportScheduleExcel";
 import UsersPage from "./UsersPage";
+import StatsPage from "./StatsPage";
 import {
   FLEET_COUNTRIES,
   FLEET_COMMON_ISPS,
@@ -112,6 +113,7 @@ const NAV = [
   { to: "/proxies", label: "Proxies" },
   { to: "/history", label: "History" },
   { to: "/settings", label: "Settings" },
+  { to: "/stats", label: "Stats", ownerOnly: true },
   { to: "/users", label: "Users", adminOnly: true },
 ];
 
@@ -200,9 +202,9 @@ function formatDelay({ delay_days = 0, delay_hours = 0, delay_minutes = 0 }) {
 function defaultStepDelay(index) {
   return {
     checked: true,
-    delay_days: index,
+    delay_days: index === 0 ? 0 : index,
     delay_hours: 0,
-    delay_minutes: 0,
+    delay_minutes: index === 0 ? 30 : 0,
     time_value: "",
   };
 }
@@ -238,7 +240,17 @@ function applyTimeSpent(selected, orderedVariableIds, dailyBudget = 30000) {
 }
 
 export default function App() {
-  const { loading, firebaseUser, isApproved, isAdmin, appUser, logout } = useAuth();
+  const {
+    loading,
+    firebaseUser,
+    isApproved,
+    isAdmin,
+    isOwner,
+    appUser,
+    logout,
+    refreshAppUser,
+    error: authError,
+  } = useAuth();
   const location = useLocation();
   const [jobs, setJobs] = useState([]);
   const [proxies, setProxies] = useState([]);
@@ -254,6 +266,8 @@ export default function App() {
     fleet_user: "",
     fleet_pass: "",
     fleet_protocol: "http",
+    telegram_enabled: "false",
+    telegram_chat_id: "",
   });
   const [theme, setTheme] = useState(() => getPreferredTheme());
   const [message, setMessage] = useState("");
@@ -331,11 +345,21 @@ export default function App() {
       <div className="auth-screen">
         <div className="auth-card">
           <h2>Account sync failed</h2>
-          <p className="error">Could not verify your account with the server.</p>
+          <p className="error">{authError || "Could not verify your account with the server."}</p>
           <p className="sub">
-            Make sure the API is running with Firebase Admin configured, then sign in again.
+            Usually the API was down or the login token expired. Retry after the API is running —
+            you should not need to sign in again.
           </p>
           <div className="actions">
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => {
+                refreshAppUser().catch(() => {});
+              }}
+            >
+              Retry
+            </button>
             <button type="button" className="btn btn-danger" onClick={() => logout()}>
               Sign out
             </button>
@@ -347,7 +371,9 @@ export default function App() {
   if (!isApproved) return <PendingScreen />;
 
   const flash = { setError, setMessage };
-  const navItems = NAV.filter((item) => !item.adminOnly || isAdmin);
+  const navItems = NAV.filter(
+    (item) => (!item.adminOnly || isAdmin) && (!item.ownerOnly || isOwner)
+  );
 
   return (
     <div className="app-shell">
@@ -474,6 +500,10 @@ export default function App() {
             path="/settings"
             element={<SettingsPage settings={settings} onRefresh={load} {...flash} />}
           />
+          <Route
+            path="/stats"
+            element={isOwner ? <StatsPage {...flash} /> : <Navigate to="/games" replace />}
+          />
           <Route path="/users" element={<UsersPage {...flash} />} />
           <Route path="*" element={<Navigate to="/games" replace />} />
         </Routes>
@@ -491,9 +521,11 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
   const [editingPlanId, setEditingPlanId] = useState(null);
   const [planGameId, setPlanGameId] = useState("");
   const [planName, setPlanName] = useState("");
+  const [planNameError, setPlanNameError] = useState("");
   const [selected, setSelected] = useState({});
   const [openPlan, setOpenPlan] = useState(null);
   const [expandedGameId, setExpandedGameId] = useState(null);
+  const planNameRef = useRef(null);
 
   const selectedGame = useMemo(
     () => games.find((g) => String(g.id) === String(planGameId)),
@@ -514,6 +546,7 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
     setEditingPlanId(null);
     setPlanGameId("");
     setPlanName("");
+    setPlanNameError("");
     setSelected({});
     setOpenPlan(null);
   };
@@ -521,7 +554,8 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
   const startCreatePlan = (game) => {
     setEditingPlanId(null);
     setPlanGameId(String(game.id));
-    setPlanName(`${game.name} Plan`);
+    setPlanName("");
+    setPlanNameError("");
     let next = {};
     game.variables.forEach((variable, index) => {
       next[variable.id] = defaultStepDelay(index);
@@ -624,8 +658,14 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
   const savePlan = async (event) => {
     event.preventDefault();
     setError("");
+    setPlanNameError("");
     if (!selectedGame) {
       setError("Select a game first");
+      return;
+    }
+    if (!planName.trim()) {
+      setPlanNameError("Plan name is required — give this plan a name before saving.");
+      planNameRef.current?.focus();
       return;
     }
     const steps = selectedGame.variables
@@ -640,12 +680,12 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
       }));
     try {
       if (editingPlanId) {
-        await api.updatePlan(editingPlanId, { name: planName, steps });
+        await api.updatePlan(editingPlanId, { name: planName.trim(), steps });
         setMessage("Plan updated.");
       } else {
         await api.createPlan({
           game_id: selectedGame.id,
-          name: planName,
+          name: planName.trim(),
           steps,
         });
         setMessage("Plan saved. Delays start from the moment you add a request.");
@@ -705,8 +745,23 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
           </button>
         </div>
         <form className="panel-body" onSubmit={savePlan}>
-          <label>Plan name</label>
-          <input value={planName} onChange={(e) => setPlanName(e.target.value)} required />
+          <label className="field-label">
+            Plan name <span className="req-mark">*</span>
+          </label>
+          <input
+            ref={planNameRef}
+            value={planName}
+            onChange={(e) => {
+              setPlanName(e.target.value);
+              if (planNameError) setPlanNameError("");
+            }}
+            placeholder="e.g. Standard plan"
+            className={planNameError ? "input-error" : undefined}
+            aria-invalid={Boolean(planNameError)}
+            aria-required="true"
+          />
+          {planNameError ? <p className="field-error">{planNameError}</p> : null}
+          <p className="sub">Required. This name is how you pick the plan when adding jobs.</p>
           <div className="actions tight">
             <button
               type="button"
@@ -1165,6 +1220,32 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
     }
   };
 
+  const testTelegram = async () => {
+    setError("");
+    try {
+      const chatId = String(form.telegram_chat_id || "").trim();
+      if (dirtyRef.current) {
+        const saved = await api.saveSettings({
+          ...form,
+          fleet_host: normalizeFleetHost(form.fleet_host),
+          fleet_user: fleetBaseUsername(form.fleet_user),
+          fleet_port: String(form.fleet_port || "5000"),
+          fleet_pass: String(form.fleet_pass || ""),
+          fleet_protocol: form.fleet_protocol || "http",
+          telegram_enabled: String(form.telegram_enabled || "false"),
+          telegram_chat_id: chatId,
+        });
+        dirtyRef.current = false;
+        setForm(saved);
+      }
+      await api.testTelegram({ telegram_chat_id: chatId });
+      setMessage("Telegram test sent. Check your chat.");
+      await onRefresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const applyPasteLine = async () => {
     const parsed = parseFleetProxyLine(pasteLine);
     if (!parsed) {
@@ -1203,7 +1284,7 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
       <div className="panel-head">
         <div>
           <h2>Settings</h2>
-          <p className="sub">Account, timing, and FleetProxy.</p>
+          <p className="sub">Account, Telegram, timing, and FleetProxy.</p>
         </div>
       </div>
 
@@ -1211,27 +1292,69 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
         <div className="settings-block">
           <h3 className="settings-section-title">Account</h3>
           <div className="settings-account-row">
-            <div>
-              <strong>{appUser?.email || "—"}</strong>
-              <div className="sub">
-                {appUser?.display_name ? `${appUser.display_name} · ` : ""}
-                {roleLabel}
+            <div className="settings-account-stack">
+              <div>
+                <strong>{appUser?.email || "—"}</strong>
+                <div className="sub">
+                  {appUser?.display_name ? `${appUser.display_name} · ` : ""}
+                  {roleLabel}
+                </div>
+                <div className="settings-account-meta">
+                  <div>
+                    <div className="sub">Signed up</div>
+                    <div>
+                      {appUser?.created_at
+                        ? new Date(appUser.created_at).toLocaleString()
+                        : "—"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="sub">Last login</div>
+                    <div>
+                      {appUser?.last_login_at
+                        ? new Date(appUser.last_login_at).toLocaleString()
+                        : "—"}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="settings-account-meta">
-                <div>
-                  <div className="sub">Signed up</div>
-                  <div>
-                    {appUser?.created_at ? new Date(appUser.created_at).toLocaleString() : "—"}
-                  </div>
+
+              <div className="settings-telegram">
+                <div className="sub">Telegram alerts</div>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={String(form.telegram_enabled || "false") === "true"}
+                    onChange={(e) =>
+                      patchForm({
+                        telegram_enabled: e.target.checked ? "true" : "false",
+                      })
+                    }
+                  />
+                  <span>Notify on failures &amp; finished accounts</span>
+                </label>
+                <div className="plan-picker">
+                  <input
+                    value={form.telegram_chat_id || ""}
+                    onChange={(e) => patchForm({ telegram_chat_id: e.target.value })}
+                    placeholder="Chat ID"
+                    autoComplete="off"
+                  />
+                  <button type="button" className="btn" onClick={testTelegram}>
+                    Test
+                  </button>
                 </div>
-                <div>
-                  <div className="sub">Last login</div>
-                  <div>
-                    {appUser?.last_login_at
-                      ? new Date(appUser.last_login_at).toLocaleString()
-                      : "—"}
-                  </div>
-                </div>
+                <details className="settings-details">
+                  <summary>How to get chat ID</summary>
+                  <ol className="settings-help-list">
+                    <li>Open the bot in Telegram and press <strong>Start</strong>.</li>
+                    <li>The bot will reply with your chat ID — copy it.</li>
+                    <li>
+                      Paste it here, enable alerts, then Save / Test. You&apos;ll get messages for
+                      failed requests and when an account finishes.
+                    </li>
+                  </ol>
+                </details>
               </div>
             </div>
             <button type="button" className="btn btn-danger" onClick={() => logout()}>
@@ -1243,14 +1366,6 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
         <form className="settings-block" onSubmit={save}>
           <h3 className="settings-section-title">Timing</h3>
           <div className="settings-grid">
-            <label>
-              <span>Timezone</span>
-              <input
-                value={form.timezone || ""}
-                onChange={(e) => patchForm({ timezone: e.target.value })}
-                placeholder="local"
-              />
-            </label>
             <label>
               <span>Daily time_spent (sec)</span>
               <input
@@ -1272,6 +1387,34 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
           </div>
 
           <h3 className="settings-section-title">FleetProxy</h3>
+          <details className="settings-details">
+            <summary>How to get proxy details</summary>
+            <ol className="settings-help-list">
+              <li>
+                Log in at{" "}
+                <a
+                  href="https://dashboard.fleetproxy.io/residential/generator"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  dashboard.fleetproxy.io
+                </a>
+                , buy a residential proxy if you don’t have one yet.
+              </li>
+              <li>
+                Open <strong>Active proxies</strong>, then <strong>Generator</strong> (or go
+                straight to the generator link above).
+              </li>
+              <li>
+                On the left, under <strong>Generated proxies</strong>, copy the proxy line plus
+                username and password.
+              </li>
+              <li>Paste the line below (or fill Host / Port / Username / Password), then Save.</li>
+            </ol>
+            <pre className="fleet-example">
+              residential-v2.fleetproxy.io:5000:r_97ff38e1a1-country-US-region-alabama:567ca5a56b
+            </pre>
+          </details>
           <label>
             <span>Paste proxy line</span>
             <div className="plan-picker">
@@ -1285,12 +1428,6 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
               </button>
             </div>
           </label>
-          <details className="settings-details">
-            <summary>Example format</summary>
-            <pre className="fleet-example">
-              residential-v2.fleetproxy.io:5000:r_97ff38e1a1-country-US-region-alabama:567ca5a56b
-            </pre>
-          </details>
 
           <div className="settings-grid">
             <label>
@@ -1358,7 +1495,9 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
 
 function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setMessage }) {
   const dailyBudget = Number(settings?.daily_time_spent) || 30000;
-  const [planName, setPlanName] = useState(`${game.name} Plan`);
+  const [planName, setPlanName] = useState("");
+  const [planNameError, setPlanNameError] = useState("");
+  const planNameRef = useRef(null);
   const [selected, setSelected] = useState(() => {
     let next = {};
     game.variables.forEach((variable, index) => {
@@ -1390,8 +1529,10 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
 
   const savePlan = async () => {
     setError("");
+    setPlanNameError("");
     if (!planName.trim()) {
-      setError("Plan name is required");
+      setPlanNameError("Plan name is required — give this plan a name before saving.");
+      planNameRef.current?.focus();
       return;
     }
     const steps = game.variables
@@ -1407,7 +1548,7 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
     try {
       const created = await api.createPlan({
         game_id: game.id,
-        name: planName,
+        name: planName.trim(),
         steps,
       });
       setMessage(`Plan "${created.name}" created.`);
@@ -1426,8 +1567,23 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
         </button>
       </div>
       <div>
-        <label>Plan name</label>
-        <input value={planName} onChange={(e) => setPlanName(e.target.value)} required />
+        <label className="field-label">
+          Plan name <span className="req-mark">*</span>
+        </label>
+        <input
+          ref={planNameRef}
+          value={planName}
+          onChange={(e) => {
+            setPlanName(e.target.value);
+            if (planNameError) setPlanNameError("");
+          }}
+          placeholder="e.g. Standard plan"
+          className={planNameError ? "input-error" : undefined}
+          aria-invalid={Boolean(planNameError)}
+          aria-required="true"
+        />
+        {planNameError ? <p className="field-error">{planNameError}</p> : null}
+        <p className="sub">Required. This name is how you pick the plan when adding jobs.</p>
         <div className="actions tight">
           <button type="button" className="btn" onClick={() => setSelected((prev) => regenerateTimeSpent(prev))}>
             Recalculate time_spent
@@ -2181,6 +2337,31 @@ function jobAccountName(job) {
   return String(job.name || "").split(" · ")[0].trim() || job.name || "—";
 }
 
+async function copyAccountName(value, setMessage, setError) {
+  const text = String(value || "").trim();
+  if (!text || text === "—") return;
+  try {
+    await navigator.clipboard.writeText(text);
+    if (setMessage) setMessage(`Copied account: ${text}`);
+  } catch (err) {
+    if (setError) setError(err.message || "Could not copy");
+  }
+}
+
+function CopyableAccount({ value, setMessage, setError }) {
+  const text = String(value || "").trim() || "—";
+  return (
+    <button
+      type="button"
+      className="copyable-account"
+      title="Click to copy"
+      onClick={() => copyAccountName(text, setMessage, setError)}
+    >
+      {text}
+    </button>
+  );
+}
+
 function jobKind(job) {
   return job.request_kind || shortEndpoint(job.url) || "request";
 }
@@ -2509,7 +2690,11 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
               return (
                 <tr key={job.id}>
                   <td>
-                    <strong>{jobAccountName(job)}</strong>
+                    <CopyableAccount
+                      value={jobAccountName(job)}
+                      setMessage={setMessage}
+                      setError={setError}
+                    />
                     <div className="sub">
                       {job.game_name ? `${job.game_name} · ` : ""}
                       {job.plan_name || "manual"}
@@ -2599,7 +2784,13 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
 
         {accountDetails && (
           <div className="account-details">
-            <h3>{accountDetails.account}</h3>
+            <h3>
+              <CopyableAccount
+                value={accountDetails.account}
+                setMessage={setMessage}
+                setError={setError}
+              />
+            </h3>
             <div className="account-details-grid">
               <div>
                 <div className="sub">Game / plan</div>
@@ -2716,7 +2907,11 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
               {accounts.map((account) => (
                 <tr key={account.batch_id}>
                   <td>
-                    <strong>{account.account_name}</strong>
+                    <CopyableAccount
+                      value={account.account_name}
+                      setMessage={setMessage}
+                      setError={setError}
+                    />
                   </td>
                   <td>
                     <div>{account.game_name || "—"}</div>
@@ -3311,7 +3506,9 @@ function HistoryPage({ games }) {
                     className={`history-row ${isOpen ? "open" : ""}`}
                     onClick={() => setOpen(isOpen ? null : run.id)}
                   >
-                    <td>{run.account_name || "—"}</td>
+                    <td>
+                      <CopyableAccount value={run.account_name || "—"} setError={setError} />
+                    </td>
                     <td>
                       <span className={`kind-tag kind-${kind}`}>{task}</span>
                     </td>

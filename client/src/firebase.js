@@ -1,5 +1,10 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider } from "firebase/auth";
+import {
+  browserLocalPersistence,
+  getAuth,
+  GoogleAuthProvider,
+  setPersistence,
+} from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -17,6 +22,12 @@ export const firebaseConfigured = missing.length === 0;
 export const firebaseApp = firebaseConfigured ? initializeApp(firebaseConfig) : null;
 export const auth = firebaseConfigured ? getAuth(firebaseApp) : null;
 export const googleProvider = new GoogleAuthProvider();
+
+if (auth) {
+  setPersistence(auth, browserLocalPersistence).catch(() => {
+    // Keep default persistence if this fails (private mode / blocked storage).
+  });
+}
 
 export function firebaseMissingKeys() {
   return missing;

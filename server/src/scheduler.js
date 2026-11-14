@@ -2,6 +2,7 @@ const cron = require("node-cron");
 const axios = require("axios");
 const { query } = require("./db");
 const { axiosProxyConfig } = require("./proxyAgent");
+const { notifyJobFailure, maybeNotifyBatchFinished } = require("./telegram");
 
 const BODY_LIMIT = 1_000_000;
 
@@ -89,6 +90,13 @@ async function executeJob(job) {
       `UPDATE jobs SET status = $2, updated_at = NOW() WHERE id = $1`,
       [job.id, ok ? "done" : "failed"]
     );
+    if (!ok) {
+      await notifyJobFailure(job, `HTTP ${response.status}`, {
+        statusCode: response.status,
+        responseBody: body,
+      });
+    }
+    await maybeNotifyBatchFinished(job);
   } catch (err) {
     await query(
       `UPDATE job_runs
@@ -100,6 +108,10 @@ async function executeJob(job) {
       `UPDATE jobs SET status = 'failed', updated_at = NOW() WHERE id = $1`,
       [job.id]
     );
+    await notifyJobFailure(job, err.message, {
+      responseBody: err.response?.data || err.message,
+    });
+    await maybeNotifyBatchFinished(job);
   }
 }
 

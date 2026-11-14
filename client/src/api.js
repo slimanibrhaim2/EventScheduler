@@ -1,10 +1,16 @@
 let authToken = null;
+let refreshAuthToken = null;
 
 export function setAuthToken(token) {
   authToken = token || null;
 }
 
-async function request(path, options = {}) {
+/** Register a callback that returns a fresh Firebase ID token (or null). */
+export function setAuthTokenRefresher(fn) {
+  refreshAuthToken = typeof fn === "function" ? fn : null;
+}
+
+async function request(path, options = {}, _retried = false) {
   const headers = {
     "Content-Type": "application/json",
     ...(options.headers || {}),
@@ -18,6 +24,18 @@ async function request(path, options = {}) {
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // Firebase ID tokens expire ~1h; refresh once and retry.
+    if (res.status === 401 && !_retried && refreshAuthToken) {
+      try {
+        const next = await refreshAuthToken();
+        if (next) {
+          setAuthToken(next);
+          return request(path, options, true);
+        }
+      } catch {
+        // fall through to original error
+      }
+    }
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     err.code = data.code;
@@ -66,4 +84,10 @@ export const api = {
   deletePlan: (id) => request(`/api/plans/${id}`, { method: "DELETE" }),
   settings: () => request("/api/settings"),
   saveSettings: (body) => request("/api/settings", { method: "PUT", body: JSON.stringify(body) }),
+  testTelegram: (body = {}) =>
+    request("/api/settings/telegram-test", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  ownerStats: () => request("/api/stats"),
 };

@@ -1,5 +1,6 @@
 const express = require("express");
 const { query } = require("../db");
+const { getBotToken, sendTelegramMessage } = require("../telegram");
 
 const router = express.Router();
 
@@ -13,7 +14,11 @@ const DEFAULTS = {
   fleet_user: "",
   fleet_pass: "",
   fleet_protocol: "http",
+  telegram_enabled: "false",
+  telegram_chat_id: "",
 };
+
+const BLOCKED_KEYS = new Set(["telegram_bot_token"]);
 
 async function loadUserSettings(userId) {
   const global = await query(`SELECT key, value FROM settings`);
@@ -23,8 +28,14 @@ async function loadUserSettings(userId) {
   );
 
   const settings = { ...DEFAULTS };
-  for (const row of global.rows) settings[row.key] = row.value;
-  for (const row of user.rows) settings[row.key] = row.value;
+  for (const row of global.rows) {
+    if (BLOCKED_KEYS.has(row.key)) continue;
+    settings[row.key] = row.value;
+  }
+  for (const row of user.rows) {
+    if (BLOCKED_KEYS.has(row.key)) continue;
+    settings[row.key] = row.value;
+  }
   return settings;
 }
 
@@ -33,7 +44,9 @@ router.get("/", async (req, res) => {
 });
 
 router.put("/", async (req, res) => {
-  const entries = Object.entries(req.body || {});
+  const entries = Object.entries(req.body || {}).filter(
+    ([key]) => !BLOCKED_KEYS.has(key)
+  );
   if (entries.length === 0) {
     return res.status(400).json({ error: "No settings provided" });
   }
@@ -50,6 +63,34 @@ router.put("/", async (req, res) => {
   }
 
   res.json(await loadUserSettings(userId));
+});
+
+router.post("/telegram-test", async (req, res) => {
+  const token = getBotToken();
+  if (!token) {
+    return res.status(500).json({
+      error: "Telegram bot token is not configured on the server",
+    });
+  }
+
+  const settings = await loadUserSettings(req.appUser.id);
+  const chatId = String(
+    req.body?.telegram_chat_id || settings.telegram_chat_id || ""
+  ).trim();
+  if (!chatId) {
+    return res.status(400).json({ error: "Enter your Telegram chat ID first" });
+  }
+
+  try {
+    await sendTelegramMessage(
+      token,
+      chatId,
+      "Event Scheduler — Telegram test OK.\nFailed requests will notify this chat."
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Event Scheduler">
+  <rect width="64" height="64" rx="14" fill="#0f1f1a"/>
+  <rect x="8" y="20" width="48" height="26" rx="12" fill="none" stroke="#3dd6c6" stroke-width="3.5"/>
+  <path d="M22 27.5v11M16.5 33h11" stroke="#3dd6c6" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="42" cy="29" r="2.8" fill="#3dd6c6"/>
+  <circle cx="47.5" cy="33.5" r="2.8" fill="#3dd6c6"/>
+  <circle cx="42" cy="38" r="2.8" fill="#3dd6c6"/>
+  <circle cx="36.5" cy="33.5" r="2.8" fill="#3dd6c6"/>
+</svg>
