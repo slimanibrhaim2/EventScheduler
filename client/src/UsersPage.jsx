@@ -84,47 +84,35 @@ export default function UsersPage({ setError, setMessage }) {
         {loading && <p className="sub">Loading…</p>}
         {!loading && users.length === 0 && <p className="sub">No users yet.</p>}
         {!loading && users.length > 0 && (
-          <table>
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Signed up</th>
-                <th>Last login</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((user) => {
-                const isTargetOwner = user.role === "owner";
-                const pending = user.status === "pending" || user.status === "rejected";
-                const approved = user.status === "approved";
-                const busy = busyId === user.id;
+          <div className="user-cards">
+            {users.map((user) => {
+              const isTargetOwner = user.role === "owner";
+              const pending = user.status === "pending" || user.status === "rejected";
+              const approved = user.status === "approved";
+              const busy = busyId === user.id;
 
-                const canReject =
-                  !isTargetOwner &&
-                  user.status !== "rejected" &&
-                  user.id !== appUser?.id &&
-                  (user.role !== "admin" || isOwner);
+              const canReject =
+                !isTargetOwner &&
+                user.status !== "rejected" &&
+                user.id !== appUser?.id &&
+                (user.role !== "admin" || isOwner);
 
-                const canApproveAsUser = !isTargetOwner && pending;
-                const canApproveAsAdmin = isOwner && !isTargetOwner && pending;
-                const canMakeAdmin =
-                  isOwner && !isTargetOwner && approved && user.role === "user";
-                const canMakeUser =
-                  isOwner && !isTargetOwner && approved && user.role === "admin";
+              const canApproveAsUser = !isTargetOwner && pending;
+              const canApproveAsAdmin = isOwner && !isTargetOwner && pending;
+              const canMakeAdmin =
+                isOwner && !isTargetOwner && approved && user.role === "user";
+              const canMakeUser =
+                isOwner && !isTargetOwner && approved && user.role === "admin";
 
-                return (
-                  <tr key={user.id}>
-                    <td>
+              return (
+                <article key={user.id} className="user-card">
+                  <div className="user-card-top">
+                    <div className="user-card-identity">
                       <strong>{user.display_name || user.email}</strong>
-                      <div className="sub">{user.email}</div>
-                    </td>
-                    <td>
+                      <div className="sub user-card-email">{user.email}</div>
+                    </div>
+                    <div className="user-card-badges">
                       <span className={`role-pill role-${user.role}`}>{roleLabel(user.role)}</span>
-                    </td>
-                    <td>
                       <span
                         className={`status ${
                           user.status === "approved"
@@ -136,106 +124,110 @@ export default function UsersPage({ setError, setMessage }) {
                       >
                         {user.status}
                       </span>
-                    </td>
-                    <td>
+                    </div>
+                  </div>
+
+                  <div className="user-card-meta">
+                    <div>
+                      <div className="sub">Signed up</div>
                       <DateTimeCell value={user.created_at} />
-                    </td>
-                    <td>
+                    </div>
+                    <div>
+                      <div className="sub">Last login</div>
                       <DateTimeCell value={user.last_login_at} />
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        {isTargetOwner ? (
-                          <span className="sub">Protected</span>
-                        ) : (
-                          <>
-                            {canApproveAsUser && (
-                              <button
-                                type="button"
-                                className="btn btn-run"
-                                disabled={busy}
-                                onClick={() =>
-                                  updateUser(
-                                    user,
-                                    isOwner
-                                      ? { status: "approved", role: "user" }
-                                      : { status: "approved" },
-                                    `Approved ${user.email} as user`
-                                  )
-                                }
-                              >
-                                {isOwner ? "Accept as user" : "Approve"}
-                              </button>
-                            )}
-                            {canApproveAsAdmin && (
-                              <button
-                                type="button"
-                                className="btn btn-info"
-                                disabled={busy}
-                                onClick={() =>
-                                  updateUser(
-                                    user,
-                                    { status: "approved", role: "admin" },
-                                    `Approved ${user.email} as admin`
-                                  )
-                                }
-                              >
-                                Accept as admin
-                              </button>
-                            )}
-                            {canMakeAdmin && (
-                              <button
-                                type="button"
-                                className="btn btn-info"
-                                disabled={busy}
-                                onClick={() =>
-                                  updateUser(user, { role: "admin" }, `${user.email} is now admin`)
-                                }
-                              >
-                                Make admin
-                              </button>
-                            )}
-                            {canMakeUser && (
-                              <button
-                                type="button"
-                                className="btn"
-                                disabled={busy}
-                                onClick={() =>
-                                  updateUser(
-                                    user,
-                                    { role: "user" },
-                                    `${user.email} is now a normal user`
-                                  )
-                                }
-                              >
-                                Make user
-                              </button>
-                            )}
-                            {canReject && (
-                              <button
-                                type="button"
-                                className="btn btn-danger"
-                                disabled={busy}
-                                onClick={() =>
-                                  updateUser(
-                                    user,
-                                    { status: "rejected" },
-                                    `Rejected ${user.email}`
-                                  )
-                                }
-                              >
-                                Reject
-                              </button>
-                            )}
-                          </>
+                    </div>
+                  </div>
+
+                  <div className="row-actions user-card-actions">
+                    {isTargetOwner ? (
+                      <span className="sub">Protected</span>
+                    ) : (
+                      <>
+                        {canApproveAsUser && (
+                          <button
+                            type="button"
+                            className="btn btn-run"
+                            disabled={busy}
+                            onClick={() =>
+                              updateUser(
+                                user,
+                                isOwner
+                                  ? { status: "approved", role: "user" }
+                                  : { status: "approved" },
+                                `Approved ${user.email} as user`
+                              )
+                            }
+                          >
+                            {isOwner ? "Accept as user" : "Approve"}
+                          </button>
                         )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        {canApproveAsAdmin && (
+                          <button
+                            type="button"
+                            className="btn btn-info"
+                            disabled={busy}
+                            onClick={() =>
+                              updateUser(
+                                user,
+                                { status: "approved", role: "admin" },
+                                `Approved ${user.email} as admin`
+                              )
+                            }
+                          >
+                            Accept as admin
+                          </button>
+                        )}
+                        {canMakeAdmin && (
+                          <button
+                            type="button"
+                            className="btn btn-info"
+                            disabled={busy}
+                            onClick={() =>
+                              updateUser(user, { role: "admin" }, `${user.email} is now admin`)
+                            }
+                          >
+                            Make admin
+                          </button>
+                        )}
+                        {canMakeUser && (
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={busy}
+                            onClick={() =>
+                              updateUser(
+                                user,
+                                { role: "user" },
+                                `${user.email} is now a normal user`
+                              )
+                            }
+                          >
+                            Make user
+                          </button>
+                        )}
+                        {canReject && (
+                          <button
+                            type="button"
+                            className="btn btn-danger"
+                            disabled={busy}
+                            onClick={() =>
+                              updateUser(
+                                user,
+                                { status: "rejected" },
+                                `Rejected ${user.email}`
+                              )
+                            }
+                          >
+                            Reject
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
         )}
       </div>
     </section>

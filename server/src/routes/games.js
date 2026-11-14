@@ -4,8 +4,19 @@ const { requireAdmin } = require("../middleware/auth");
 
 const router = express.Router();
 
+const GAME_SELECT = `
+  SELECT g.*,
+    cu.email AS created_by_email,
+    cu.display_name AS created_by_name,
+    uu.email AS updated_by_email,
+    uu.display_name AS updated_by_name
+  FROM games g
+  LEFT JOIN app_users cu ON cu.id = g.created_by
+  LEFT JOIN app_users uu ON uu.id = g.updated_by
+`;
+
 async function getGameWithVariables(id) {
-  const game = await query(`SELECT * FROM games WHERE id = $1`, [id]);
+  const game = await query(`${GAME_SELECT} WHERE g.id = $1`, [id]);
   if (!game.rows[0]) return null;
   const variables = await query(
     `SELECT * FROM game_variables WHERE game_id = $1 ORDER BY sort_order, id`,
@@ -15,7 +26,7 @@ async function getGameWithVariables(id) {
 }
 
 router.get("/", async (_req, res) => {
-  const games = await query(`SELECT * FROM games ORDER BY name`);
+  const games = await query(`${GAME_SELECT} ORDER BY g.name`);
   const result = [];
   for (const game of games.rows) {
     const variables = await query(
@@ -52,9 +63,12 @@ router.post("/", requireAdmin, async (req, res) => {
     return res.status(400).json({ error: "Add at least one variable (name + value)" });
   }
 
+  const userId = req.appUser.id;
   const created = await query(
-    `INSERT INTO games (name) VALUES ($1) RETURNING *`,
-    [String(name).trim()]
+    `INSERT INTO games (name, created_by, updated_by, updated_at)
+     VALUES ($1, $2, $2, NOW())
+     RETURNING *`,
+    [String(name).trim(), userId]
   );
   const gameId = created.rows[0].id;
 
@@ -93,7 +107,12 @@ router.put("/:id", requireAdmin, async (req, res) => {
     return res.status(400).json({ error: "Add at least one variable (name + value)" });
   }
 
-  await query(`UPDATE games SET name = $2 WHERE id = $1`, [gameId, String(name).trim()]);
+  await query(
+    `UPDATE games
+     SET name = $2, updated_by = $3, updated_at = NOW()
+     WHERE id = $1`,
+    [gameId, String(name).trim(), req.appUser.id]
+  );
 
   const keepIds = [];
   for (const item of cleaned) {

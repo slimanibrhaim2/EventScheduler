@@ -127,34 +127,41 @@ export default function StatsPage({ setError }) {
 
             <div className="stats-block">
               <h3 className="settings-section-title">Per user</h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>User</th>
-                    <th>Today</th>
-                    <th>Last 7 days</th>
-                    <th>Total accounts</th>
-                    <th>Jobs</th>
-                  </tr>
-                </thead>
-                <tbody>
+              {(data?.users || []).length === 0 ? (
+                <p className="sub">No users yet.</p>
+              ) : (
+                <div className="stats-user-cards">
                   {(data?.users || []).map((user) => (
-                    <tr key={user.id}>
-                      <td>
-                        <strong>{user.email}</strong>
+                    <article key={user.id} className="stats-user-card">
+                      <div className="stats-user-identity">
+                        <strong className="stats-user-email">{user.email}</strong>
                         <div className="sub">
                           {user.display_name ? `${user.display_name} · ` : ""}
                           {user.role} · {user.status}
                         </div>
-                      </td>
-                      <td>{user.accounts_today}</td>
-                      <td>{user.accounts_7d}</td>
-                      <td>{user.accounts_total}</td>
-                      <td>{user.jobs_total}</td>
-                    </tr>
+                      </div>
+                      <div className="stats-user-metrics">
+                        <div>
+                          <div className="sub">Today</div>
+                          <strong>{user.accounts_today}</strong>
+                        </div>
+                        <div>
+                          <div className="sub">7 days</div>
+                          <strong>{user.accounts_7d}</strong>
+                        </div>
+                        <div>
+                          <div className="sub">Accounts</div>
+                          <strong>{user.accounts_total}</strong>
+                        </div>
+                        <div>
+                          <div className="sub">Jobs</div>
+                          <strong>{user.jobs_total}</strong>
+                        </div>
+                      </div>
+                    </article>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              )}
             </div>
           </>
         )}

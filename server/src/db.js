@@ -77,6 +77,11 @@ async function migrate() {
     ALTER TABLE plans ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES app_users(id) ON DELETE SET NULL;
     CREATE INDEX IF NOT EXISTS plans_user_id_idx ON plans (user_id, created_at DESC);
 
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES app_users(id) ON DELETE SET NULL;
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES app_users(id) ON DELETE SET NULL;
+    UPDATE games SET updated_at = created_at WHERE updated_at IS NULL OR updated_at < created_at;
+
     CREATE TABLE IF NOT EXISTS user_settings (
       user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
       key TEXT NOT NULL,

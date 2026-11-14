@@ -155,6 +155,39 @@ function DateTimeCell({ value }) {
   );
 }
 
+function personLabel(name, email) {
+  const display = String(name || "").trim();
+  const mail = String(email || "").trim();
+  return display || mail || "";
+}
+
+function formatWhen(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+}
+
+function gameAuditLine(game) {
+  const createdBy = personLabel(game.created_by_name, game.created_by_email);
+  const updatedBy = personLabel(game.updated_by_name, game.updated_by_email);
+  const createdAt = formatWhen(game.created_at);
+  const updatedAt = formatWhen(game.updated_at);
+  const parts = [];
+  if (createdBy || createdAt) {
+    parts.push(`Added${createdBy ? ` by ${createdBy}` : ""}${createdAt ? ` · ${createdAt}` : ""}`);
+  }
+  if (updatedAt && updatedAt !== createdAt) {
+    parts.push(`Last edit${updatedBy ? ` by ${updatedBy}` : ""} · ${updatedAt}`);
+  } else if (updatedBy && updatedBy !== createdBy) {
+    parts.push(`Last edit by ${updatedBy}`);
+  }
+  return parts.join(" · ");
+}
+
 function startOfLocalDay(date = new Date()) {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
@@ -239,6 +272,82 @@ function applyTimeSpent(selected, orderedVariableIds, dailyBudget = 30000) {
   return next;
 }
 
+const PLAN_SHARE_TYPE = "event-scheduler-plan";
+
+function uniquePlanName(plans, gameId, desired) {
+  const base = String(desired || "Plan").trim() || "Plan";
+  const taken = new Set(
+    plans
+      .filter((plan) => String(plan.game_id) === String(gameId))
+      .map((plan) => String(plan.name || "").trim().toLowerCase())
+  );
+  if (!taken.has(base.toLowerCase())) return base;
+  let i = 2;
+  while (taken.has(`${base} ${i}`.toLowerCase())) i += 1;
+  return `${base} ${i}`;
+}
+
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function planToSharePayload(full) {
+  return {
+    type: PLAN_SHARE_TYPE,
+    version: 1,
+    exported_at: new Date().toISOString(),
+    game_name: full.game_name || "",
+    plan_name: full.name || "Plan",
+    steps: (full.steps || []).map((step) => ({
+      variable_name: step.variable_name || "",
+      variable_value: step.variable_value || "",
+      delay_days: Number(step.delay_days) || 0,
+      delay_hours: Number(step.delay_hours) || 0,
+      delay_minutes: Number(step.delay_minutes) || 0,
+      time_value: step.time_value || "",
+      sort_order: Number(step.sort_order) || 0,
+    })),
+  };
+}
+
+function matchVariableForImport(game, step) {
+  const name = String(step.variable_name || "").trim().toLowerCase();
+  const value = String(step.variable_value || "").trim();
+  return (
+    game.variables.find((variable) => variable.name.trim().toLowerCase() === name) ||
+    (value
+      ? game.variables.find((variable) => String(variable.value).trim() === value)
+      : null)
+  );
+}
+
+function stepsFromSharePayload(game, data) {
+  const steps = [];
+  const missing = [];
+  for (const [index, step] of (data.steps || []).entries()) {
+    const variable = matchVariableForImport(game, step);
+    if (!variable) {
+      missing.push(step.variable_name || step.variable_value || `step ${index + 1}`);
+      continue;
+    }
+    steps.push({
+      variable_id: variable.id,
+      delay_days: Number(step.delay_days) || 0,
+      delay_hours: Number(step.delay_hours) || 0,
+      delay_minutes: Number(step.delay_minutes) || 0,
+      time_value: step.time_value || "",
+      sort_order: Number.isFinite(step.sort_order) ? step.sort_order : index,
+    });
+  }
+  return { steps, missing };
+}
+
 export default function App() {
   const {
     loading,
@@ -288,6 +397,11 @@ export default function App() {
     setSettings(s);
   };
 
+  // Live status only — do not reload games/plans/settings (that wipes open edit forms).
+  const refreshJobs = async () => {
+    setJobs(await api.jobs());
+  };
+
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
@@ -313,12 +427,12 @@ export default function App() {
     }
   };
 
-  // Keep jobs/status fresh without a full page reload.
+  // Keep jobs/status fresh without resetting game/plan/settings editors.
   useEffect(() => {
     if (!isApproved) return undefined;
     const tick = () => {
       if (document.visibilityState === "hidden") return;
-      load().catch(() => {});
+      refreshJobs().catch(() => {});
     };
     const id = window.setInterval(tick, 5000);
     return () => window.clearInterval(id);
@@ -526,6 +640,12 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
   const [openPlan, setOpenPlan] = useState(null);
   const [expandedGameId, setExpandedGameId] = useState(null);
   const planNameRef = useRef(null);
+  const importFileRef = useRef(null);
+  const [importGameId, setImportGameId] = useState("");
+  const [pendingImport, setPendingImport] = useState(null);
+  const [importPlanName, setImportPlanName] = useState("");
+  const [importNameError, setImportNameError] = useState("");
+  const importNameRef = useRef(null);
 
   const selectedGame = useMemo(
     () => games.find((g) => String(g.id) === String(planGameId)),
@@ -727,6 +847,141 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
     }
   };
 
+  const duplicatePlan = async (plan) => {
+    setError("");
+    try {
+      const full = await api.getPlan(plan.id);
+      const name = uniquePlanName(plans, full.game_id, `${full.name} (copy)`);
+      const steps = (full.steps || []).map((step, index) => ({
+        variable_id: step.variable_id,
+        delay_days: Number(step.delay_days) || 0,
+        delay_hours: Number(step.delay_hours) || 0,
+        delay_minutes: Number(step.delay_minutes) || 0,
+        time_value: step.time_value || "",
+        sort_order: Number.isFinite(step.sort_order) ? step.sort_order : index,
+      }));
+      const created = await api.createPlan({
+        game_id: full.game_id,
+        name,
+        steps,
+      });
+      setMessage(`Duplicated as "${created.name}".`);
+      setExpandedGameId(full.game_id);
+      await onRefresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const exportPlan = async (plan) => {
+    setError("");
+    try {
+      const full = await api.getPlan(plan.id);
+      const payload = planToSharePayload(full);
+      const safeName = String(full.name || "plan")
+        .trim()
+        .replace(/[^\w\-]+/g, "_")
+        .slice(0, 60);
+      downloadJson(`${safeName || "plan"}.json`, payload);
+      setMessage(`Exported "${full.name}". Share the JSON file to import elsewhere.`);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const startImportForGame = (game) => {
+    setImportGameId(String(game.id));
+    importFileRef.current?.click();
+  };
+
+  const cancelPendingImport = () => {
+    setPendingImport(null);
+    setImportPlanName("");
+    setImportNameError("");
+    setImportGameId("");
+  };
+
+  const confirmImportPlan = async (event) => {
+    event?.preventDefault?.();
+    if (!pendingImport) return;
+    const typed = importPlanName.trim();
+    if (!typed) {
+      setImportNameError("Enter a plan name before importing.");
+      importNameRef.current?.focus();
+      return;
+    }
+    setError("");
+    setImportNameError("");
+    const { game, steps, missing } = pendingImport;
+    try {
+      const name = uniquePlanName(plans, game.id, typed);
+      const created = await api.createPlan({
+        game_id: game.id,
+        name,
+        steps,
+      });
+      setExpandedGameId(game.id);
+      cancelPendingImport();
+      await onRefresh();
+      if (missing.length) {
+        setMessage(
+          `Imported "${created.name}" (${steps.length} steps). Skipped unmatched: ${missing.join(", ")}.`
+        );
+      } else {
+        setMessage(`Imported "${created.name}" into ${game.name}.`);
+      }
+    } catch (err) {
+      setError(err.message || "Could not import plan file.");
+    }
+  };
+
+  const onImportFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setError("");
+    try {
+      const data = JSON.parse(await file.text());
+      if (!data || data.type !== PLAN_SHARE_TYPE || !Array.isArray(data.steps)) {
+        setError("Not a valid Event Scheduler plan file.");
+        setImportGameId("");
+        return;
+      }
+      let game =
+        games.find((item) => String(item.id) === String(importGameId)) ||
+        games.find(
+          (item) =>
+            item.name.trim().toLowerCase() === String(data.game_name || "").trim().toLowerCase()
+        );
+      if (!game && games.length === 1) game = games[0];
+      if (!game) {
+        setError(
+          data.game_name
+            ? `No matching game for "${data.game_name}". Open a game and use Import plan there.`
+            : "Pick a game first, then use Import plan on that game."
+        );
+        setImportGameId("");
+        return;
+      }
+      const { steps, missing } = stepsFromSharePayload(game, data);
+      if (steps.length === 0) {
+        setError(
+          `No levels matched on "${game.name}". Import needs the same level names (or values) as the shared plan.`
+        );
+        setImportGameId("");
+        return;
+      }
+      setPendingImport({ game, steps, missing, sourceName: data.plan_name || "" });
+      setImportPlanName("");
+      setImportNameError("");
+      setImportGameId("");
+      window.setTimeout(() => importNameRef.current?.focus(), 0);
+    } catch (err) {
+      setError(err.message || "Could not import plan file.");
+      setImportGameId("");
+    }
+  };
+
   if (mode === "plan" && selectedGame) {
     return (
       <section className="panel">
@@ -878,6 +1133,12 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
             <button className="btn" type="button" onClick={() => startEditPlan(openPlan)}>
               Edit plan
             </button>
+            <button className="btn" type="button" onClick={() => duplicatePlan(openPlan)}>
+              Duplicate
+            </button>
+            <button className="btn" type="button" onClick={() => exportPlan(openPlan)}>
+              Export
+            </button>
             <button className="btn danger" type="button" onClick={() => deletePlan(openPlan)}>
               Delete plan
             </button>
@@ -916,11 +1177,61 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
 
   return (
     <section className="panel">
+      <input
+        ref={importFileRef}
+        type="file"
+        accept="application/json,.json"
+        hidden
+        onChange={onImportFile}
+      />
+      {pendingImport && (
+        <div className="modal-backdrop" onClick={cancelPendingImport}>
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3>Name this imported plan</h3>
+            <p>
+              Delays will be imported into <strong>{pendingImport.game.name}</strong>
+              {pendingImport.sourceName ? ` (from “${pendingImport.sourceName}”).` : "."} Choose your own
+              plan name.
+            </p>
+            <form onSubmit={confirmImportPlan}>
+              <label className="field-label">
+                Plan name <span className="req-mark">*</span>
+              </label>
+              <input
+                ref={importNameRef}
+                value={importPlanName}
+                onChange={(e) => {
+                  setImportPlanName(e.target.value);
+                  if (importNameError) setImportNameError("");
+                }}
+                placeholder="e.g. My shared plan"
+                className={importNameError ? "input-error" : undefined}
+                aria-invalid={Boolean(importNameError)}
+                required
+              />
+              {importNameError ? <p className="field-error">{importNameError}</p> : null}
+              <div className="modal-actions">
+                <button type="button" className="btn" onClick={cancelPendingImport}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn primary">
+                  Import plan
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
       <div className="panel-head">
         <div>
           <h2>Games</h2>
           <p className="sub">
-            Games are shared. Plans are yours only.
+            Games are shared. Plans are yours only. Duplicate a plan, or Export/Import JSON to share delays.
             {isAdmin ? " Admins can also add or edit games." : ""}
           </p>
         </div>
@@ -949,6 +1260,7 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
           {games.map((game) => {
             const gamePlans = plansByGame[game.id] || [];
             const expanded = expandedGameId === game.id;
+            const audit = gameAuditLine(game);
             return (
               <article key={game.id} className="game-item">
                 <div className="game-item-main">
@@ -962,6 +1274,7 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
                       {game.variables.length} variable{game.variables.length === 1 ? "" : "s"} · {gamePlans.length} plan
                       {gamePlans.length === 1 ? "" : "s"}
                     </span>
+                    {isAdmin && audit ? <span className="sub game-audit">{audit}</span> : null}
                   </button>
                   <div className="actions tight">
                     {isAdmin && (
@@ -971,6 +1284,9 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
                     )}
                     <button className="btn" type="button" onClick={() => startCreatePlan(game)}>
                       Create plan
+                    </button>
+                    <button className="btn" type="button" onClick={() => startImportForGame(game)}>
+                      Import plan
                     </button>
                     {isAdmin && (
                       <button className="btn danger" type="button" onClick={() => deleteGame(game)}>
@@ -1004,7 +1320,7 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
 
                     <h3>Plans</h3>
                     {gamePlans.length === 0 ? (
-                      <p className="sub">No plans for this game yet.</p>
+                      <p className="sub">No plans for this game yet. Create one, or Import a shared JSON.</p>
                     ) : (
                       <table>
                         <thead>
@@ -1020,15 +1336,23 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
                               <td>{plan.name}</td>
                               <td>{plan.step_count}</td>
                               <td>
-                                <button className="btn" type="button" onClick={() => viewPlan(plan.id)}>
-                                  View
-                                </button>
-                                <button className="btn" type="button" onClick={() => startEditPlan(plan)}>
-                                  Edit
-                                </button>
-                                <button className="btn danger" type="button" onClick={() => deletePlan(plan)}>
-                                  Delete
-                                </button>
+                                <div className="actions tight">
+                                  <button className="btn" type="button" onClick={() => viewPlan(plan.id)}>
+                                    View
+                                  </button>
+                                  <button className="btn" type="button" onClick={() => startEditPlan(plan)}>
+                                    Edit
+                                  </button>
+                                  <button className="btn" type="button" onClick={() => duplicatePlan(plan)}>
+                                    Duplicate
+                                  </button>
+                                  <button className="btn" type="button" onClick={() => exportPlan(plan)}>
+                                    Export
+                                  </button>
+                                  <button className="btn danger" type="button" onClick={() => deletePlan(plan)}>
+                                    Delete
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           ))}
@@ -1052,6 +1376,7 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
   const editingId = id ? Number(id) : null;
   const existing = games.find((game) => game.id === editingId);
   const emptyVariables = [{ name: "Level 30", value: "" }];
+  const dirtyRef = useRef(false);
   const [gameName, setGameName] = useState(existing?.name || "");
   const [variables, setVariables] = useState(
     existing
@@ -1064,12 +1389,17 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
   );
 
   useEffect(() => {
+    dirtyRef.current = false;
+  }, [editingId]);
+
+  useEffect(() => {
     if (!editingId) {
+      if (dirtyRef.current) return;
       setGameName("");
       setVariables(emptyVariables);
       return;
     }
-    if (!existing) return;
+    if (!existing || dirtyRef.current) return;
     setGameName(existing.name);
     setVariables(
       existing.variables.map((variable) => ({
@@ -1081,10 +1411,12 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
   }, [editingId, existing]);
 
   const addVariable = () => {
+    dirtyRef.current = true;
     setVariables((prev) => [...prev, { name: `Level ${prev.length + 1}`, value: "" }]);
   };
 
   const updateVariable = (index, key, value) => {
+    dirtyRef.current = true;
     setVariables((prev) => prev.map((item, i) => (i === index ? { ...item, [key]: value } : item)));
   };
 
@@ -1099,6 +1431,7 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
     ) {
       return;
     }
+    dirtyRef.current = true;
     setVariables((prev) => prev.filter((_, i) => i !== index));
   };
 
@@ -1113,6 +1446,7 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
         await api.createGame({ name: gameName, variables });
         setMessage("Game saved.");
       }
+      dirtyRef.current = false;
       await onRefresh();
       navigate("/games");
     } catch (err) {
@@ -1146,7 +1480,15 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
       </div>
       <form className="panel-body" onSubmit={saveGame}>
         <label>Game name</label>
-        <input value={gameName} onChange={(e) => setGameName(e.target.value)} required placeholder="Game-1" />
+        <input
+          value={gameName}
+          onChange={(e) => {
+            dirtyRef.current = true;
+            setGameName(e.target.value);
+          }}
+          required
+          placeholder="Game-1"
+        />
         <label>Levels</label>
         {variables.map((variable, index) => (
           <div className="delay-row" key={variable.id || `new-${index}`}>
@@ -1412,7 +1754,7 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
               <li>Paste the line below (or fill Host / Port / Username / Password), then Save.</li>
             </ol>
             <pre className="fleet-example">
-              residential-v2.fleetproxy.io:5000:r_97ff38e1a1-country-US-region-alabama:567ca5a56b
+              residential-v2.fleetproxy.io:5000:YOUR_USER-country-US-region-california:YOUR_PASSWORD
             </pre>
           </details>
           <label>
@@ -1451,7 +1793,7 @@ function SettingsPage({ settings, onRefresh, setError, setMessage }) {
               <input
                 value={form.fleet_user || ""}
                 onChange={(e) => patchForm({ fleet_user: e.target.value })}
-                placeholder="r_97ff38e1a1"
+                placeholder="YOUR_USER"
               />
             </label>
             <label>
@@ -2854,7 +3196,10 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
       <div className="panel-head">
         <div>
           <h2>Finished accounts</h2>
-          <p className="sub">Accounts whose plan jobs are all done or failed. Auto-refreshes every 5s.</p>
+          <p className="sub">
+            Accounts whose plan jobs are all done or failed. Auto-removed after 20 days with jobs, history,
+            request data, and unused account proxies. Auto-refreshes every 5s.
+          </p>
         </div>
         <div className="actions tight">
           <button type="button" className="btn" onClick={() => loadAccounts()}>
@@ -2867,7 +3212,7 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
               onClick={async () => {
                 if (
                   !(await confirmAction(
-                    `Delete all ${accounts.length} finished account(s)? This removes their jobs and history.`,
+                    `Delete all ${accounts.length} finished account(s)? This removes their jobs, history, request data, and unused account proxies.`,
                     { title: "Delete all finished", confirmLabel: "Delete all", danger: true }
                   ))
                 ) {
@@ -2875,8 +3220,10 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
                 }
                 try {
                   const result = await api.deleteAllFinished();
+                  const proxyPart =
+                    result.deleted_proxies > 0 ? `, ${result.deleted_proxies} proxy(ies)` : "";
                   setMessage(
-                    `Deleted ${result.deleted_accounts} finished account(s) (${result.deleted_jobs} jobs).`
+                    `Deleted ${result.deleted_accounts} finished account(s) (${result.deleted_jobs} jobs${proxyPart}).`
                   );
                   await Promise.all([loadAccounts(), onRefresh()]);
                 } catch (err) {
@@ -2941,18 +3288,23 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
                         className="btn btn-danger"
                         onClick={async () => {
                           if (
-                            !(await confirmAction(`Delete all jobs for "${account.account_name}"?`, {
-                              title: "Delete account jobs",
-                              confirmLabel: "Delete",
-                              danger: true,
-                            }))
+                            !(await confirmAction(
+                              `Delete all jobs for "${account.account_name}"? This also removes history, request data, and unused account proxies.`,
+                              {
+                                title: "Delete account jobs",
+                                confirmLabel: "Delete",
+                                danger: true,
+                              }
+                            ))
                           ) {
                             return;
                           }
                           api
                             .deleteBatch(account.batch_id)
                             .then(() => {
-                              setMessage(`Removed finished account ${account.account_name}`);
+                              setMessage(
+                                `Removed finished account ${account.account_name} (jobs, history, unused proxies).`
+                              );
                               return Promise.all([loadAccounts(), onRefresh()]);
                             })
                             .catch((e) => setError(e.message));
@@ -3413,7 +3765,7 @@ function HistoryPage({ games }) {
         <div>
           <h2>Run history</h2>
           <p className="sub">
-            Finished accounts are removed automatically 20 days after they complete.
+            Finished accounts are removed automatically 20 days after they complete (jobs, history, request data, and unused account proxies).
           </p>
         </div>
         <button type="button" className="btn" onClick={() => loadRuns().catch((err) => setError(err.message))}>

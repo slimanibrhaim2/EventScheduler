@@ -3,6 +3,7 @@ const axios = require("axios");
 const { query } = require("./db");
 const { axiosProxyConfig } = require("./proxyAgent");
 const { notifyJobFailure, maybeNotifyBatchFinished } = require("./telegram");
+const { deleteJobsAndOrphanProxies } = require("./cleanupFinished");
 
 const BODY_LIMIT = 1_000_000;
 
@@ -140,30 +141,31 @@ const HISTORY_RETENTION_DAYS = Number(process.env.HISTORY_RETENTION_DAYS || 20);
 async function purgeFinishedAccounts(days = HISTORY_RETENTION_DAYS) {
   const keepDays = String(Math.max(1, Number(days) || 20));
 
-  const batches = await query(
-    `DELETE FROM jobs
-     WHERE batch_id IN (
+  const batches = await deleteJobsAndOrphanProxies(
+    `batch_id IN (
        SELECT j.batch_id
        FROM jobs j
        WHERE j.batch_id IS NOT NULL
        GROUP BY j.batch_id
        HAVING COUNT(*) FILTER (WHERE j.status NOT IN ('done', 'failed')) = 0
           AND MAX(j.updated_at) < NOW() - ($1::text || ' days')::interval
-     )
-     RETURNING id`,
-    [keepDays]
+     )`,
+    [keepDays],
+    "id"
   );
 
-  const orphans = await query(
-    `DELETE FROM jobs
-     WHERE batch_id IS NULL
+  const orphans = await deleteJobsAndOrphanProxies(
+    `batch_id IS NULL
        AND status IN ('done', 'failed')
-       AND updated_at < NOW() - ($1::text || ' days')::interval
-     RETURNING id`,
-    [keepDays]
+       AND updated_at < NOW() - ($1::text || ' days')::interval`,
+    [keepDays],
+    "id"
   );
 
-  return (batches.rowCount || 0) + (orphans.rowCount || 0);
+  return {
+    deletedJobs: batches.deletedJobs + orphans.deletedJobs,
+    deletedProxies: batches.deletedProxies + orphans.deletedProxies,
+  };
 }
 
 function startScheduler() {
@@ -176,13 +178,13 @@ function startScheduler() {
     }
   });
 
-  // Daily: remove finished accounts and their history after retention window.
+  // Daily: remove finished accounts, history, and unused account proxies after retention.
   cron.schedule("15 3 * * *", async () => {
     try {
-      const deleted = await purgeFinishedAccounts();
-      if (deleted > 0) {
+      const { deletedJobs, deletedProxies } = await purgeFinishedAccounts();
+      if (deletedJobs > 0 || deletedProxies > 0) {
         console.log(
-          `finished cleanup: deleted ${deleted} job(s) finished more than ${HISTORY_RETENTION_DAYS} days ago`
+          `finished cleanup: deleted ${deletedJobs} job(s) and ${deletedProxies} proxy(ies) finished more than ${HISTORY_RETENTION_DAYS} days ago`
         );
       }
     } catch (err) {

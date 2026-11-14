@@ -1883,6 +1883,98 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
+.game-audit {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.user-cards,
+.stats-user-cards {
+  display: grid;
+  gap: 12px;
+}
+
+.user-card,
+.stats-user-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-2) 75%, transparent);
+}
+
+.user-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.user-card-identity {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.user-card-email,
+.stats-user-email {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.user-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.user-card-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.user-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stats-user-identity {
+  min-width: 0;
+}
+
+.stats-user-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stats-user-metrics > div {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  display: grid;
+  gap: 2px;
+}
+
+.stats-user-metrics strong {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 @media (max-width: 900px) {
   .stats-summary {
     grid-template-columns: 1fr 1fr;
@@ -1891,16 +1983,37 @@ code {
   .stats-day-row {
     grid-template-columns: 90px 1fr 32px;
   }
-}
 
-@media (max-width: 900px) {
   .topbar {
     flex-direction: column;
     align-items: stretch;
+    gap: 10px;
   }
 
   .topnav {
     justify-content: flex-start;
+    gap: 4px;
+  }
+
+  .topnav a,
+  .topnav .btn {
+    padding: 6px 9px;
+    font-size: 12px;
+  }
+
+  .panel-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .panel-head .actions,
+  .panel-head > .btn,
+  .panel-head > a.btn {
+    align-self: stretch;
+  }
+
+  .page {
+    padding: 12px;
   }
 
   .grid,
@@ -1915,5 +2028,59 @@ code {
   .game-item-main {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .user-chip {
+    max-width: 100%;
+    margin-left: 0;
+    margin-top: 8px;
+  }
+
+  .stats-inline {
+    display: block;
+    margin-top: 4px;
+  }
+
+  .stats-user-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .row-actions {
+    flex-wrap: wrap;
+  }
+
+  .row-actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .stats-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-day-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .stats-day-count {
+    text-align: left;
+  }
+
+  .user-card-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-block {
+    padding: 12px;
+  }
+
+  .panel-body {
+    padding: 12px 12px 16px;
+  }
+
+  .brand .sub {
+    display: none;
   }
 }
