@@ -574,6 +574,44 @@ html[data-theme="light"] .game-item {
     var(--panel-2);
 }
 
+.account-details-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.account-details-head h3 {
+  margin: 0;
+}
+
+.active-account-list {
+  display: grid;
+  gap: 10px;
+}
+
+.active-account-names {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.active-account-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-2) 75%, transparent);
+}
+
 .account-details h3 {
   margin: 0 0 12px;
   font-size: 16px;
@@ -2051,6 +2089,14 @@ code {
 
   .row-actions .btn {
     flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 700px) {
+  .account-details-head,
+  .active-account-item {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 

@@ -58,7 +58,14 @@ export const api = {
   runNow: (id) => request(`/api/jobs/${id}/run-now`, { method: "POST" }),
   deleteJob: (id) => request(`/api/jobs/${id}`, { method: "DELETE" }),
   finishedAccounts: () => request("/api/jobs/accounts/finished"),
+  activeAccounts: (gameId) =>
+    request(gameId ? `/api/jobs/accounts/active?game_id=${gameId}` : "/api/jobs/accounts/active"),
   deleteBatch: (batchId) => request(`/api/jobs/batches/${batchId}`, { method: "DELETE" }),
+  deleteAccountByName: (accountName) =>
+    request("/api/jobs/accounts/delete", {
+      method: "POST",
+      body: JSON.stringify({ account_name: accountName }),
+    }),
   deleteAllFinished: () => request("/api/jobs/accounts/finished", { method: "DELETE" }),
   proxies: () => request("/api/proxies"),
   createProxy: (body) => request("/api/proxies", { method: "POST", body: JSON.stringify(body) }),

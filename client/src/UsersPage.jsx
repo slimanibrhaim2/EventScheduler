@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { useAuth } from "./auth";
+import { confirmAction } from "./confirm";
 
 function DateTimeCell({ value }) {
   if (!value) return "—";
@@ -210,13 +211,25 @@ export default function UsersPage({ setError, setMessage }) {
                             type="button"
                             className="btn btn-danger"
                             disabled={busy}
-                            onClick={() =>
+                            onClick={async () => {
+                              if (
+                                !(await confirmAction(
+                                  `Reject ${user.email}? They will lose access until approved again.`,
+                                  {
+                                    title: "Reject user",
+                                    confirmLabel: "Reject",
+                                    danger: true,
+                                  }
+                                ))
+                              ) {
+                                return;
+                              }
                               updateUser(
                                 user,
                                 { status: "rejected" },
                                 `Rejected ${user.email}`
-                              )
-                            }
+                              );
+                            }}
                           >
                             Reject
                           </button>

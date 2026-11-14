@@ -16,6 +16,7 @@ import { AuthLoadingScreen, LoginScreen, PendingScreen } from "./AuthScreens";
 import { exportUnfinishedEventsExcel } from "./exportScheduleExcel";
 import UsersPage from "./UsersPage";
 import StatsPage from "./StatsPage";
+import { confirmAction, setConfirmAsk } from "./confirm";
 import {
   FLEET_COUNTRIES,
   FLEET_COMMON_ISPS,
@@ -41,19 +42,12 @@ function applyTheme(theme) {
   localStorage.setItem(THEME_KEY, theme);
 }
 
-let confirmAsk = null;
-
-function confirmAction(message, options = {}) {
-  if (!confirmAsk) return Promise.resolve(window.confirm(message));
-  return confirmAsk(message, options);
-}
-
 function ConfirmModalHost() {
   const [dialog, setDialog] = useState(null);
   const resolveRef = useRef(null);
 
   useEffect(() => {
-    confirmAsk = (message, options = {}) =>
+    setConfirmAsk((message, options = {}) =>
       new Promise((resolve) => {
         resolveRef.current = resolve;
         setDialog({
@@ -63,9 +57,10 @@ function ConfirmModalHost() {
           cancelLabel: options.cancelLabel || "Cancel",
           danger: Boolean(options.danger),
         });
-      });
+      })
+    );
     return () => {
-      confirmAsk = null;
+      setConfirmAsk(null);
     };
   }, []);
 
@@ -109,6 +104,7 @@ const NAV = [
   { to: "/games", label: "Games" },
   { to: "/jobs", label: "Jobs" },
   { to: "/jobs/scheduled", label: "Scheduled" },
+  { to: "/jobs/active", label: "Active" },
   { to: "/jobs/finished", label: "Finished" },
   { to: "/proxies", label: "Proxies" },
   { to: "/history", label: "History" },
@@ -600,6 +596,10 @@ export default function App() {
           <Route
             path="/jobs/scheduled"
             element={<ScheduledJobsPage jobs={jobs} onRefresh={load} {...flash} />}
+          />
+          <Route
+            path="/jobs/active"
+            element={<ActiveAccountsPage games={games} onRefresh={load} {...flash} />}
           />
           <Route
             path="/jobs/finished"
@@ -2803,12 +2803,21 @@ function SearchableSelect({ label, value, onChange, options, allLabel, placehold
 }
 
 function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
-  const [showFull, setShowFull] = useState(false);
-  const [accountFilter, setAccountFilter] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const accountFromUrl = searchParams.get("account") || "";
+  const [showFull, setShowFull] = useState(Boolean(accountFromUrl));
+  const [accountFilter, setAccountFilter] = useState(accountFromUrl);
   const [gameFilter, setGameFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
   const [dateFilter, setDateFilter] = useState("all");
+
+  useEffect(() => {
+    const next = searchParams.get("account") || "";
+    if (!next) return;
+    setAccountFilter(next);
+    setShowFull(true);
+  }, [searchParams]);
 
   const accountOptions = useMemo(() => {
     const names = new Set(jobs.map(jobAccountName).filter(Boolean));
@@ -2837,6 +2846,7 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
     setStatusFilter("");
     setKindFilter("");
     setDateFilter("all");
+    if (searchParams.get("account")) setSearchParams({}, { replace: true });
   };
 
   const openAccountDetails = (job) => {
@@ -2903,6 +2913,7 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
     const sample = earliest || accountJobs[0];
     return {
       account: accountFilter,
+      batchId: sample.batch_id || null,
       game: sample.game_name || "—",
       plan: sample.plan_name || "manual",
       proxy: sample.proxy_name || "direct",
@@ -2911,6 +2922,35 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
       total: accountJobs.length,
     };
   }, [showFull, accountFilter, jobs]);
+
+  const deleteWholeAccount = async () => {
+    if (!accountDetails?.account) return;
+    if (
+      !(await confirmAction(
+        `Delete account "${accountDetails.account}" and all ${accountDetails.total} job(s)? This removes sessions, events, history, and unused proxies.`,
+        {
+          title: "Delete account",
+          confirmLabel: "Delete account",
+          danger: true,
+        }
+      ))
+    ) {
+      return;
+    }
+    try {
+      const result = await api.deleteAccountByName(accountDetails.account);
+      setAccountFilter("");
+      setShowFull(false);
+      setMessage(
+        `Deleted account ${accountDetails.account} (${result.deleted_jobs} jobs${
+          result.deleted_proxies ? `, ${result.deleted_proxies} proxies` : ""
+        }).`
+      );
+      await onRefresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
   return (
     <section className="panel">
@@ -3126,13 +3166,18 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
 
         {accountDetails && (
           <div className="account-details">
-            <h3>
-              <CopyableAccount
-                value={accountDetails.account}
-                setMessage={setMessage}
-                setError={setError}
-              />
-            </h3>
+            <div className="account-details-head">
+              <h3>
+                <CopyableAccount
+                  value={accountDetails.account}
+                  setMessage={setMessage}
+                  setError={setError}
+                />
+              </h3>
+              <button type="button" className="btn btn-danger" onClick={deleteWholeAccount}>
+                Delete account
+              </button>
+            </div>
             <div className="account-details-grid">
               <div>
                 <div className="sub">Game / plan</div>
@@ -3155,6 +3200,160 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [gameFilter, setGameFilter] = useState("");
+  const gameFilterRef = useRef("");
+
+  const gameOptions = useMemo(
+    () =>
+      (games || [])
+        .map((game) => ({ value: String(game.id), label: game.name }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [games]
+  );
+
+  const loadAccounts = async ({ silent = false, gameId = gameFilterRef.current } = {}) => {
+    if (!silent) setLoading(true);
+    try {
+      setAccounts(await api.activeAccounts(gameId || undefined));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAccounts().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      loadAccounts({ silent: true }).catch(() => {});
+    };
+    const id = window.setInterval(tick, 5000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const onGameFilter = (next) => {
+    setGameFilter(next);
+    gameFilterRef.current = next;
+    loadAccounts({ gameId: next }).catch(() => {});
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Active accounts</h2>
+          <p className="sub">
+            Accounts that still have pending or running jobs. Filter by game. Auto-refreshes every 5s.
+          </p>
+        </div>
+        <div className="actions tight">
+          <button type="button" className="btn" onClick={() => loadAccounts()}>
+            Refresh
+          </button>
+          <Link className="btn" to="/jobs/scheduled">
+            Scheduled
+          </Link>
+        </div>
+      </div>
+      <div className="panel-body">
+        <div className="filters">
+          <SearchableSelect
+            label="Game"
+            value={gameFilter}
+            onChange={onGameFilter}
+            options={gameOptions}
+            allLabel="All games"
+            placeholder="Search games…"
+          />
+        </div>
+        {gameFilter && (
+          <div className="actions tight filter-actions">
+            <button type="button" className="btn" onClick={() => onGameFilter("")}>
+              Clear filter
+            </button>
+          </div>
+        )}
+        {loading && <p className="sub">Loading…</p>}
+        {!loading && accounts.length === 0 && (
+          <p className="sub">
+            {gameFilter
+              ? "No active accounts for this game."
+              : "No active accounts — everything finished or nothing scheduled."}
+          </p>
+        )}
+        {!loading && accounts.length > 0 && (
+          <div className="active-account-list">
+            <p className="sub">{accounts.length} active account{accounts.length === 1 ? "" : "s"}</p>
+            <ul className="active-account-names">
+              {accounts.map((account) => (
+                <li
+                  key={`${account.account_name}-${account.game_id || "none"}`}
+                  className="active-account-item"
+                >
+                  <div>
+                    <CopyableAccount
+                      value={account.account_name}
+                      setMessage={setMessage}
+                      setError={setError}
+                    />
+                    {account.game_name ? (
+                      <div className="sub">{account.game_name}</div>
+                    ) : null}
+                  </div>
+                  <div className="actions tight">
+                    <Link
+                      className="btn btn-info"
+                      to={`/jobs/scheduled?account=${encodeURIComponent(account.account_name)}`}
+                    >
+                      Open schedule
+                    </Link>
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      onClick={async () => {
+                        if (
+                          !(await confirmAction(
+                            `Delete account "${account.account_name}" and all its jobs?`,
+                            {
+                              title: "Delete account",
+                              confirmLabel: "Delete account",
+                              danger: true,
+                            }
+                          ))
+                        ) {
+                          return;
+                        }
+                        try {
+                          const result = await api.deleteAccountByName(account.account_name);
+                          setMessage(
+                            `Deleted ${account.account_name} (${result.deleted_jobs} jobs).`
+                          );
+                          await Promise.all([loadAccounts({ silent: true }), onRefresh()]);
+                        } catch (err) {
+                          setError(err.message);
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>

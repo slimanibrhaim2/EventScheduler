@@ -387,6 +387,31 @@ router.post("/from-plan", async (req, res) => {
   });
 });
 
+router.get("/accounts/active", async (req, res) => {
+  const params = [req.appUser.id];
+  let gameFilter = "";
+  if (req.query.game_id) {
+    params.push(req.query.game_id);
+    gameFilter = ` AND j.game_id = $2`;
+  }
+  const result = await query(
+    `SELECT
+       SPLIT_PART(MIN(j.name), ' · ', 1) AS account_name,
+       MIN(j.game_id) AS game_id,
+       MIN(g.name) AS game_name
+     FROM jobs j
+     LEFT JOIN games g ON g.id = j.game_id
+     WHERE j.user_id = $1
+       AND j.status IN ('pending', 'running')
+       AND SPLIT_PART(j.name, ' · ', 1) <> ''
+       ${gameFilter}
+     GROUP BY LOWER(SPLIT_PART(j.name, ' · ', 1)), j.game_id
+     ORDER BY account_name`,
+    params
+  );
+  res.json(result.rows);
+});
+
 router.get("/accounts/finished", async (req, res) => {
   const result = await query(
     `SELECT
@@ -451,6 +476,31 @@ router.delete("/batches/:batchId", async (req, res) => {
   }
   res.status(204).end();
 });
+
+/** Delete every job for an account name (all sessions/events), plus unused proxies. */
+async function deleteNamedAccount(req, res) {
+  const accountName = String(req.body?.account_name || req.query?.name || "").trim();
+  if (!accountName) {
+    return res.status(400).json({ error: "account_name is required" });
+  }
+  const result = await deleteJobsAndOrphanProxies(
+    `user_id = $1
+       AND LOWER(SPLIT_PART(name, ' · ', 1)) = LOWER($2)`,
+    [req.appUser.id, accountName],
+    "id"
+  );
+  if (result.deletedJobs === 0) {
+    return res.status(404).json({ error: "Account not found" });
+  }
+  res.json({
+    deleted_jobs: result.deletedJobs,
+    deleted_proxies: result.deletedProxies,
+    account_name: accountName,
+  });
+}
+
+router.post("/accounts/delete", deleteNamedAccount);
+router.delete("/accounts/named", deleteNamedAccount);
 
 router.post("/:id/run-now", async (req, res) => {
   const found = await query(
