@@ -80,6 +80,7 @@ async function migrate() {
     ALTER TABLE games ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     ALTER TABLE games ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES app_users(id) ON DELETE SET NULL;
     ALTER TABLE games ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES app_users(id) ON DELETE SET NULL;
+    ALTER TABLE games ADD COLUMN IF NOT EXISTS notices TEXT NOT NULL DEFAULT '';
     UPDATE games SET updated_at = created_at WHERE updated_at IS NULL OR updated_at < created_at;
 
     CREATE TABLE IF NOT EXISTS user_settings (

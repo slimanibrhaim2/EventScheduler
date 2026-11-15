@@ -4,12 +4,13 @@ const { query } = require("../db");
 const router = express.Router();
 
 function normalizeDelay(step, index) {
+  const rawTime = String(step.time_value ?? "").replace(/\D/g, "").slice(0, 6);
   return {
     variable_id: Number(step.variable_id),
     delay_days: Math.max(0, Number(step.delay_days) || 0),
     delay_hours: Math.max(0, Number(step.delay_hours) || 0),
     delay_minutes: Math.max(0, Number(step.delay_minutes) || 0),
-    time_value: String(step.time_value ?? ""),
+    time_value: rawTime,
     sort_order: Number.isFinite(step.sort_order) ? step.sort_order : index,
   };
 }

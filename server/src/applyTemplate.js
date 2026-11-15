@@ -45,12 +45,24 @@ function withEndpoint(rawParts, kind) {
   return { ...rawParts, url };
 }
 
+const TIME_SPENT_MAX = 999999;
+
 function addTimeSpentNoise(value, noiseSeconds = 300) {
   const base = Number(value);
   if (!Number.isFinite(base)) return String(value ?? "");
   const span = Math.max(0, Number(noiseSeconds) || 0);
   const delta = Math.floor(Math.random() * (span * 2 + 1)) - span;
-  return String(Math.max(0, Math.round(base + delta)));
+  return String(Math.min(TIME_SPENT_MAX, Math.max(0, Math.round(base + delta))));
+}
+
+/** Event time_spent = session time_spent + random 30–60s (always strictly greater). */
+function bumpTimeSpentAfterSession(sessionValue, minBump = 30, maxBump = 60) {
+  const base = Number(sessionValue);
+  const session = Number.isFinite(base) ? base : 0;
+  const lo = Math.min(minBump, maxBump);
+  const hi = Math.max(minBump, maxBump);
+  const bump = lo + Math.floor(Math.random() * (hi - lo + 1));
+  return String(Math.min(TIME_SPENT_MAX, Math.max(0, Math.round(session + bump))));
 }
 
 function applyTemplate(rawParts, values) {
@@ -87,4 +99,5 @@ module.exports = {
   withEndpoint,
   requestKindFromUrl,
   addTimeSpentNoise,
+  bumpTimeSpentAfterSession,
 };

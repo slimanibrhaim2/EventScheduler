@@ -7,6 +7,7 @@ const {
   withEndpoint,
   requestKindFromUrl,
   addTimeSpentNoise,
+  bumpTimeSpentAfterSession,
 } = require("../applyTemplate");
 const { executeJob } = require("../scheduler");
 const { createFleetProxyForAccount } = require("../fleetProxy");
@@ -249,6 +250,17 @@ router.post("/from-plan", async (req, res) => {
   let lastTimeSpent = 0;
   let lastEventToken = "";
 
+  /** Prefer the next upcoming event token; fall back to the last one already used. */
+  function nextEventTokenFrom(fromDay) {
+    for (let d = fromDay; d <= maxDay; d += 1) {
+      const events = (byDay.get(d) || []).slice().sort((a, b) => minutesOfDay(a) - minutesOfDay(b));
+      if (events.length > 0) {
+        return String(events[0].variable_value || "");
+      }
+    }
+    return lastEventToken || "";
+  }
+
   async function createSessionJob({ day, runAt, timeSpent, label, eventToken }) {
     const token = String(eventToken || lastEventToken || "");
     const sessionTemplate = withEndpoint(parsed, "session");
@@ -276,19 +288,23 @@ router.post("/from-plan", async (req, res) => {
   for (let day = 0; day <= maxDay; day += 1) {
     const dayEvents = (byDay.get(day) || []).slice().sort((a, b) => minutesOfDay(a) - minutesOfDay(b));
 
-    // Day with no events: still send one daily session (reuse last known event token).
+    // Day with no events: still send one daily session.
+    // Fill event_token from the next upcoming event (not only the last past one).
+    // Never fire immediately — wait at least 30 minutes from account add.
     if (dayEvents.length === 0) {
       const sessionTimeSpent = addTimeSpentNoise(lastTimeSpent || 0, noise);
       lastTimeSpent = Number(sessionTimeSpent) || lastTimeSpent;
+      const MIN_EMPTY_SESSION_MS = 30 * 60 * 1000;
       let sessionAt = addDelay(startedAt, { delay_days: day, delay_hours: 0, delay_minutes: 0 });
-      if (sessionAt < startedAt) sessionAt = new Date(startedAt.getTime());
+      const earliest = new Date(startedAt.getTime() + MIN_EMPTY_SESSION_MS);
+      if (sessionAt < earliest) sessionAt = earliest;
       created.push(
         await createSessionJob({
           day,
           runAt: sessionAt,
           timeSpent: sessionTimeSpent,
           label: `Day ${day} session`,
-          eventToken: lastEventToken,
+          eventToken: nextEventTokenFrom(day),
         })
       );
       continue;
@@ -297,12 +313,12 @@ router.post("/from-plan", async (req, res) => {
     let coveringSessionAt = null;
     let previousAt = null;
     let sessionIndex = 0;
+    let lastSessionTimeSpent = Number(lastTimeSpent) || 0;
 
     for (const step of dayEvents) {
-      const noisyTime = addTimeSpentNoise(step.time_value || lastTimeSpent, noise);
-      lastTimeSpent = Number(noisyTime) || lastTimeSpent;
       const gapMs = randomSessionEventGapMs();
       const nextEventToken = String(step.variable_value || "");
+      const baseTime = Number(step.time_value) || lastTimeSpent || 0;
 
       let eventAt = addDelay(startedAt, step);
       if (previousAt && eventAt.getTime() - previousAt.getTime() < MIN_GAP_MS) {
@@ -323,11 +339,10 @@ router.post("/from-plan", async (req, res) => {
           eventAt = new Date(sessionAt.getTime() + gapMs);
         }
 
-        const sessionTimeSpent = addTimeSpentNoise(
-          Number(step.time_value) || lastTimeSpent || 0,
-          noise
-        );
-        lastTimeSpent = Number(sessionTimeSpent) || lastTimeSpent;
+        // Noise only on the session; event will be session + 30–60s.
+        const sessionTimeSpent = addTimeSpentNoise(baseTime, noise);
+        lastSessionTimeSpent = Number(sessionTimeSpent) || 0;
+        lastTimeSpent = lastSessionTimeSpent;
 
         sessionIndex += 1;
         const label =
@@ -352,12 +367,15 @@ router.post("/from-plan", async (req, res) => {
         eventAt = new Date(previousAt.getTime() + randomSessionEventGapMs());
       }
 
+      const eventTimeSpent = bumpTimeSpentAfterSession(lastSessionTimeSpent, 30, 60);
+      lastTimeSpent = Number(eventTimeSpent) || lastTimeSpent;
+
       const eventTemplate = withEndpoint(parsed, "event");
       const eventFilled = applyTemplate(eventTemplate, {
         event_token: nextEventToken,
         value: nextEventToken,
-        time_spent: noisyTime,
-        time_value: noisyTime,
+        time_spent: eventTimeSpent,
+        time_value: eventTimeSpent,
         variable_name: step.variable_name,
       });
 

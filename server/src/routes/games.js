@@ -45,7 +45,7 @@ router.get("/:id", async (req, res) => {
 });
 
 router.post("/", requireAdmin, async (req, res) => {
-  const { name, variables } = req.body;
+  const { name, variables, notices } = req.body;
   if (!name || !String(name).trim()) {
     return res.status(400).json({ error: "Game name is required" });
   }
@@ -64,11 +64,12 @@ router.post("/", requireAdmin, async (req, res) => {
   }
 
   const userId = req.appUser.id;
+  const noticesText = String(notices ?? "").trim();
   const created = await query(
-    `INSERT INTO games (name, created_by, updated_by, updated_at)
-     VALUES ($1, $2, $2, NOW())
+    `INSERT INTO games (name, notices, created_by, updated_by, updated_at)
+     VALUES ($1, $2, $3, $3, NOW())
      RETURNING *`,
-    [String(name).trim(), userId]
+    [String(name).trim(), noticesText, userId]
   );
   const gameId = created.rows[0].id;
 
@@ -85,7 +86,7 @@ router.post("/", requireAdmin, async (req, res) => {
 
 router.put("/:id", requireAdmin, async (req, res) => {
   const gameId = Number(req.params.id);
-  const { name, variables } = req.body;
+  const { name, variables, notices } = req.body;
   if (!name || !String(name).trim()) {
     return res.status(400).json({ error: "Game name is required" });
   }
@@ -107,11 +108,12 @@ router.put("/:id", requireAdmin, async (req, res) => {
     return res.status(400).json({ error: "Add at least one variable (name + value)" });
   }
 
+  const noticesText = String(notices ?? "").trim();
   await query(
     `UPDATE games
-     SET name = $2, updated_by = $3, updated_at = NOW()
+     SET name = $2, notices = $3, updated_by = $4, updated_at = NOW()
      WHERE id = $1`,
-    [gameId, String(name).trim(), req.appUser.id]
+    [gameId, String(name).trim(), noticesText, req.appUser.id]
   );
 
   const keepIds = [];

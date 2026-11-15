@@ -51,6 +51,7 @@ CREATE INDEX IF NOT EXISTS job_runs_job_id_idx ON job_runs (job_id, started_at D
 CREATE TABLE IF NOT EXISTS games (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
+  notices TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_by INTEGER REFERENCES app_users(id) ON DELETE SET NULL,

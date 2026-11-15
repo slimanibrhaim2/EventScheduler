@@ -238,7 +238,31 @@ function defaultStepDelay(index) {
   };
 }
 
-/** Cumulative time_spent: each day adds dailyBudget seconds, split across events that day. */
+const TIME_SPENT_MAX_DIGITS = 6;
+const TIME_SPENT_MAX = 10 ** TIME_SPENT_MAX_DIGITS - 1; // 999999
+
+/**
+ * Keep time_spent as digits only, max 6 characters.
+ * Returns { value, truncated } so the UI can toast when the user typed too many digits.
+ */
+function clampTimeSpentInput(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return {
+    value: digits.slice(0, TIME_SPENT_MAX_DIGITS),
+    truncated: digits.length > TIME_SPENT_MAX_DIGITS,
+  };
+}
+
+function clampTimeSpentNumber(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(TIME_SPENT_MAX, n);
+}
+
+/**
+ * Cumulative time_spent: each calendar day from the previous event adds dailyBudget
+ * (skipped empty days still count). Multiple events on the same day split that day's total.
+ */
 function applyTimeSpent(selected, orderedVariableIds, dailyBudget = 30000) {
   const checked = orderedVariableIds
     .map((id) => ({ id, ...(selected[id] || {}) }))
@@ -246,24 +270,30 @@ function applyTimeSpent(selected, orderedVariableIds, dailyBudget = 30000) {
 
   const byDay = new Map();
   for (const step of checked) {
-    const day = Number(step.delay_days) || 0;
+    const day = Math.max(0, Number(step.delay_days) || 0);
     if (!byDay.has(day)) byDay.set(day, []);
     byDay.get(day).push(step.id);
   }
 
   const next = { ...selected };
   let last = 0;
+  let previousDay = -1;
   const days = [...byDay.keys()].sort((a, b) => a - b);
+  const budget = Number(dailyBudget) || 30000;
   for (const day of days) {
     const ids = byDay.get(day);
-    const increment = Number(dailyBudget) / ids.length;
+    // Include empty days between previous event and this one (e.g. 8 → 23 adds 15 days).
+    const daysPassed = day - previousDay;
+    const dayTotal = budget * daysPassed;
+    const perEvent = dayTotal / ids.length;
     for (const id of ids) {
-      last += increment;
+      last += perEvent;
       next[id] = {
         ...next[id],
-        time_value: String(Math.round(last)),
+        time_value: String(clampTimeSpentNumber(last)),
       };
     }
+    previousDay = day;
   }
   return next;
 }
@@ -746,13 +776,10 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
   };
 
   const updateStep = (variableId, patch) => {
-    setSelected((prev) => {
-      const merged = {
-        ...prev,
-        [variableId]: { ...(prev[variableId] || defaultStepDelay(0)), checked: true, ...patch },
-      };
-      return regenerateTimeSpent(merged);
-    });
+    setSelected((prev) => ({
+      ...prev,
+      [variableId]: { ...(prev[variableId] || defaultStepDelay(0)), checked: true, ...patch },
+    }));
   };
 
   const deleteGame = async (game) => {
@@ -795,7 +822,7 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
         delay_days: Number(selected[variable.id]?.delay_days) || 0,
         delay_hours: Number(selected[variable.id]?.delay_hours) || 0,
         delay_minutes: Number(selected[variable.id]?.delay_minutes) || 0,
-        time_value: selected[variable.id]?.time_value || "",
+        time_value: clampTimeSpentInput(selected[variable.id]?.time_value || "").value,
         sort_order: index,
       }));
     try {
@@ -991,8 +1018,8 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
               {editingPlanId ? "Edit plan" : "Create plan"} · {selectedGame.name}
             </h2>
             <p className="sub">
-              Delays are relative. time_spent is auto-built: each day adds {dailyBudget} seconds, split if several
-              events share that day, then added to the previous value.
+              Delays are relative. Press Calculate at the bottom to rebuild time_spent from delays — skipped days
+              between levels still add to the total. Manual edits stay until you calculate again. Max 6 digits.
             </p>
           </div>
           <button className="btn" type="button" onClick={goList}>
@@ -1017,15 +1044,6 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
           />
           {planNameError ? <p className="field-error">{planNameError}</p> : null}
           <p className="sub">Required. This name is how you pick the plan when adding jobs.</p>
-          <div className="actions tight">
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setSelected((prev) => regenerateTimeSpent(prev))}
-            >
-              Recalculate time_spent
-            </button>
-          </div>
           <table>
             <thead>
               <tr>
@@ -1046,12 +1064,10 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
                         type="checkbox"
                         checked={!!step.checked}
                         onChange={(e) => {
-                          setSelected((prev) =>
-                            regenerateTimeSpent({
-                              ...prev,
-                              [variable.id]: { ...step, checked: e.target.checked },
-                            })
-                          );
+                          setSelected((prev) => ({
+                            ...prev,
+                            [variable.id]: { ...step, checked: e.target.checked },
+                          }));
                         }}
                       />
                     </td>
@@ -1063,13 +1079,19 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
                       <input
                         className="time-value-input"
                         value={step.time_value || ""}
-                        onChange={(e) =>
+                        inputMode="numeric"
+                        maxLength={TIME_SPENT_MAX_DIGITS + 1}
+                        onChange={(e) => {
+                          const { value, truncated } = clampTimeSpentInput(e.target.value);
+                          if (truncated) {
+                            setMessage(`time_spent is limited to ${TIME_SPENT_MAX_DIGITS} digits (max ${TIME_SPENT_MAX}).`);
+                          }
                           setSelected((prev) => ({
                             ...prev,
-                            [variable.id]: { ...step, time_value: e.target.value },
-                          }))
-                        }
-                        placeholder="auto"
+                            [variable.id]: { ...step, time_value: value },
+                          }));
+                        }}
+                        placeholder="e.g. 30000"
                       />
                     </td>
                     <td>
@@ -1110,6 +1132,16 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
             </tbody>
           </table>
           <div className="actions">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setSelected((prev) => regenerateTimeSpent(prev));
+                setMessage("time_spent recalculated from delays (empty days in between also count).");
+              }}
+            >
+              Calculate time_spent
+            </button>
             <button className="btn primary" type="submit">
               {editingPlanId ? "Update plan" : "Save plan"}
             </button>
@@ -1273,6 +1305,7 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
                     <span className="sub">
                       {game.variables.length} variable{game.variables.length === 1 ? "" : "s"} · {gamePlans.length} plan
                       {gamePlans.length === 1 ? "" : "s"}
+                      {game.notices ? " · has notices" : ""}
                     </span>
                     {isAdmin && audit ? <span className="sub game-audit">{audit}</span> : null}
                   </button>
@@ -1298,6 +1331,12 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
 
                 {expanded && (
                   <div className="game-item-detail">
+                    {game.notices ? (
+                      <div className="game-notices">
+                        <h3>Notices</h3>
+                        <p className="game-notices-text">{game.notices}</p>
+                      </div>
+                    ) : null}
                     <h3>Variables</h3>
                     <table>
                       <thead>
@@ -1378,6 +1417,7 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
   const emptyVariables = [{ name: "Level 30", value: "" }];
   const dirtyRef = useRef(false);
   const [gameName, setGameName] = useState(existing?.name || "");
+  const [notices, setNotices] = useState(existing?.notices || "");
   const [variables, setVariables] = useState(
     existing
       ? existing.variables.map((variable) => ({
@@ -1396,11 +1436,13 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
     if (!editingId) {
       if (dirtyRef.current) return;
       setGameName("");
+      setNotices("");
       setVariables(emptyVariables);
       return;
     }
     if (!existing || dirtyRef.current) return;
     setGameName(existing.name);
+    setNotices(existing.notices || "");
     setVariables(
       existing.variables.map((variable) => ({
         id: variable.id,
@@ -1439,11 +1481,12 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
     event.preventDefault();
     setError("");
     try {
+      const payload = { name: gameName, notices, variables };
       if (editingId) {
-        await api.updateGame(editingId, { name: gameName, variables });
+        await api.updateGame(editingId, payload);
         setMessage("Game updated.");
       } else {
-        await api.createGame({ name: gameName, variables });
+        await api.createGame(payload);
         setMessage("Game saved.");
       }
       dirtyRef.current = false;
@@ -1472,7 +1515,7 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
       <div className="panel-head">
         <div>
           <h2>{editingId ? "Edit game" : "Add game"}</h2>
-          <p className="sub">Name the game, then add variables (level name + value).</p>
+          <p className="sub">Name the game, optional notices, then add variables (level name + value).</p>
         </div>
         <Link className="btn" to="/games">
           Back to games
@@ -1488,6 +1531,18 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
           }}
           required
           placeholder="Game-1"
+        />
+        <label>
+          Notices <span className="sub">(optional)</span>
+        </label>
+        <textarea
+          value={notices}
+          onChange={(e) => {
+            dirtyRef.current = true;
+            setNotices(e.target.value);
+          }}
+          placeholder="Tips, warnings, or notes for users of this game…"
+          rows={4}
         />
         <label>Levels</label>
         {variables.map((variable, index) => (
@@ -1860,13 +1915,10 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
     );
 
   const updateStep = (variableId, patch) => {
-    setSelected((prev) => {
-      const merged = {
-        ...prev,
-        [variableId]: { ...(prev[variableId] || defaultStepDelay(0)), checked: true, ...patch },
-      };
-      return regenerateTimeSpent(merged);
-    });
+    setSelected((prev) => ({
+      ...prev,
+      [variableId]: { ...(prev[variableId] || defaultStepDelay(0)), checked: true, ...patch },
+    }));
   };
 
   const savePlan = async () => {
@@ -1884,7 +1936,7 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
         delay_days: Number(selected[variable.id]?.delay_days) || 0,
         delay_hours: Number(selected[variable.id]?.delay_hours) || 0,
         delay_minutes: Number(selected[variable.id]?.delay_minutes) || 0,
-        time_value: selected[variable.id]?.time_value || "",
+        time_value: clampTimeSpentInput(selected[variable.id]?.time_value || "").value,
         sort_order: index,
       }));
     try {
@@ -1926,11 +1978,7 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
         />
         {planNameError ? <p className="field-error">{planNameError}</p> : null}
         <p className="sub">Required. This name is how you pick the plan when adding jobs.</p>
-        <div className="actions tight">
-          <button type="button" className="btn" onClick={() => setSelected((prev) => regenerateTimeSpent(prev))}>
-            Recalculate time_spent
-          </button>
-        </div>
+        <p className="sub">Filled once at start. Edits stay until you press Calculate. Max 6 digits.</p>
         <table>
           <thead>
             <tr>
@@ -1951,12 +1999,10 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
                       type="checkbox"
                       checked={!!step.checked}
                       onChange={(e) =>
-                        setSelected((prev) =>
-                          regenerateTimeSpent({
-                            ...prev,
-                            [variable.id]: { ...step, checked: e.target.checked },
-                          })
-                        )
+                        setSelected((prev) => ({
+                          ...prev,
+                          [variable.id]: { ...step, checked: e.target.checked },
+                        }))
                       }
                     />
                   </td>
@@ -1968,12 +2014,20 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
                     <input
                       className="time-value-input"
                       value={step.time_value || ""}
-                      onChange={(e) =>
+                      inputMode="numeric"
+                      maxLength={TIME_SPENT_MAX_DIGITS + 1}
+                      onChange={(e) => {
+                        const { value, truncated } = clampTimeSpentInput(e.target.value);
+                        if (truncated) {
+                          setMessage(
+                            `time_spent is limited to ${TIME_SPENT_MAX_DIGITS} digits (max ${TIME_SPENT_MAX}).`
+                          );
+                        }
                         setSelected((prev) => ({
                           ...prev,
-                          [variable.id]: { ...step, time_value: e.target.value },
-                        }))
-                      }
+                          [variable.id]: { ...step, time_value: value },
+                        }));
+                      }}
                     />
                   </td>
                   <td>
@@ -2014,6 +2068,16 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
           </tbody>
         </table>
         <div className="actions">
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              setSelected((prev) => regenerateTimeSpent(prev));
+              setMessage("time_spent recalculated from delays (empty days in between also count).");
+            }}
+          >
+            Calculate time_spent
+          </button>
           <button className="btn primary" type="button" onClick={savePlan}>
             Save plan
           </button>
@@ -2359,6 +2423,12 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
             </option>
           ))}
         </select>
+        {selectedGame?.notices ? (
+          <div className="game-notices">
+            <h3>Notices · {selectedGame.name}</h3>
+            <p className="game-notices-text">{selectedGame.notices}</p>
+          </div>
+        ) : null}
 
         <label>Plan</label>
         <div className="plan-picker">

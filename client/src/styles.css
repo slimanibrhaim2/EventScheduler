@@ -1929,6 +1929,27 @@ code {
   overflow-wrap: anywhere;
 }
 
+.game-notices {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent, #3dd6c6) 35%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent, #3dd6c6) 8%, transparent);
+}
+
+.game-notices h3 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+
+.game-notices-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+  color: var(--text);
+}
+
 .user-cards,
 .stats-user-cards {
   display: grid;
