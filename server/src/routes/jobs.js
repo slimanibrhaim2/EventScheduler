@@ -249,16 +249,84 @@ router.post("/from-plan", async (req, res) => {
   const maxDay = Math.max(...[...byDay.keys()]);
   let lastTimeSpent = 0;
   let lastEventToken = "";
+  let lastEventDay = -1;
+
+  function sortedDayEvents(d) {
+    return (byDay.get(d) || []).slice().sort((a, b) => minutesOfDay(a) - minutesOfDay(b));
+  }
+
+  function dayFirstTimeValue(d) {
+    const events = sortedDayEvents(d);
+    if (!events.length) return null;
+    const n = Number(events[0].time_value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function dayLastTimeValue(d) {
+    const events = sortedDayEvents(d);
+    if (!events.length) return null;
+    const n = Number(events[events.length - 1].time_value);
+    return Number.isFinite(n) ? n : null;
+  }
 
   /** Prefer the next upcoming event token; fall back to the last one already used. */
   function nextEventTokenFrom(fromDay) {
     for (let d = fromDay; d <= maxDay; d += 1) {
-      const events = (byDay.get(d) || []).slice().sort((a, b) => minutesOfDay(a) - minutesOfDay(b));
+      const events = sortedDayEvents(d);
       if (events.length > 0) {
         return String(events[0].variable_value || "");
       }
     }
     return lastEventToken || "";
+  }
+
+  function nextEventDayFrom(fromDay) {
+    for (let d = fromDay; d <= maxDay; d += 1) {
+      if (sortedDayEvents(d).length > 0) return d;
+    }
+    return null;
+  }
+
+  /**
+   * Empty-day sessions: linearly interpolate time_spent between previous and next event days
+   * so values rise each day and stay below the next event.
+   * Example: day1=100, day4=160 → day2≈120, day3≈140.
+   */
+  function emptyDaySessionTimeSpent(day) {
+    const TIME_SPENT_MAX = 999999;
+    const nextDay = nextEventDayFrom(day);
+    const prevDay = lastEventDay;
+    const prevT = Number(lastTimeSpent) || 0;
+
+    let value;
+    if (nextDay == null) {
+      // Past the last event: keep climbing gently.
+      value = prevT + Math.max(30, Math.floor((Number(noise) || 300) / 3));
+    } else {
+      const nextTRaw = dayFirstTimeValue(nextDay);
+      const nextT = nextTRaw == null ? prevT + 300 : nextTRaw;
+      const startDay = prevDay >= 0 ? prevDay : -1;
+      const startT = prevDay >= 0 ? prevT : 0;
+      const span = nextDay - startDay;
+      if (span <= 0) {
+        value = Math.min(prevT + 30, Math.max(0, nextT - 90));
+      } else {
+        const fraction = (day - startDay) / span;
+        value = startT + (nextT - startT) * fraction;
+        // Stay below next event (leave room for pre-event session noise + event bump).
+        const ceiling = Math.max(startT, nextT - 90);
+        value = Math.min(value, ceiling);
+      }
+    }
+
+    // Always increase vs previous job, but never reach/exceed next event when known.
+    value = Math.max(value, prevT + 1);
+    const nextTCap = nextDay != null ? dayFirstTimeValue(nextDay) : null;
+    if (nextTCap != null) {
+      value = Math.min(value, Math.max(prevT + 1, nextTCap - 61));
+    }
+    value = Math.min(TIME_SPENT_MAX, Math.max(0, Math.round(value)));
+    return String(value);
   }
 
   async function createSessionJob({ day, runAt, timeSpent, label, eventToken }) {
@@ -286,13 +354,13 @@ router.post("/from-plan", async (req, res) => {
   }
 
   for (let day = 0; day <= maxDay; day += 1) {
-    const dayEvents = (byDay.get(day) || []).slice().sort((a, b) => minutesOfDay(a) - minutesOfDay(b));
+    const dayEvents = sortedDayEvents(day);
 
     // Day with no events: still send one daily session.
-    // Fill event_token from the next upcoming event (not only the last past one).
+    // time_spent rises toward the next event; event_token comes from that next event.
     // Never fire immediately — wait at least 30 minutes from account add.
     if (dayEvents.length === 0) {
-      const sessionTimeSpent = addTimeSpentNoise(lastTimeSpent || 0, noise);
+      const sessionTimeSpent = emptyDaySessionTimeSpent(day);
       lastTimeSpent = Number(sessionTimeSpent) || lastTimeSpent;
       const MIN_EMPTY_SESSION_MS = 30 * 60 * 1000;
       let sessionAt = addDelay(startedAt, { delay_days: day, delay_hours: 0, delay_minutes: 0 });
@@ -339,9 +407,12 @@ router.post("/from-plan", async (req, res) => {
           eventAt = new Date(sessionAt.getTime() + gapMs);
         }
 
-        // Noise only on the session; event will be session + 30–60s.
-        const sessionTimeSpent = addTimeSpentNoise(baseTime, noise);
-        lastSessionTimeSpent = Number(sessionTimeSpent) || 0;
+        // Noise on session around the event's planned time, but never below prior sessions.
+        // Event will be this session + 30–60s.
+        let sessionNum = Number(addTimeSpentNoise(baseTime, noise)) || 0;
+        sessionNum = Math.max(sessionNum, (Number(lastTimeSpent) || 0) + 1);
+        const sessionTimeSpent = String(Math.min(999999, sessionNum));
+        lastSessionTimeSpent = sessionNum;
         lastTimeSpent = lastSessionTimeSpent;
 
         sessionIndex += 1;
@@ -394,6 +465,7 @@ router.post("/from-plan", async (req, res) => {
         })
       );
       if (nextEventToken) lastEventToken = nextEventToken;
+      lastEventDay = day;
       previousAt = eventAt;
     }
   }
