@@ -259,6 +259,73 @@ function clampTimeSpentNumber(value) {
   return Math.min(TIME_SPENT_MAX, n);
 }
 
+/** Resize/compress an image file to a JPEG data URL for upload. */
+function readImageAsDataUrl(file, maxSize = 900, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    if (!file || !String(file.type || "").startsWith("image/")) {
+      reject(new Error("Please choose an image file"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read image"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Could not load image"));
+      img.onload = () => {
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = String(reader.result || "");
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function localDayKey(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function formatDayHeading(dayKey) {
+  if (!dayKey || dayKey === "unknown") return "Unknown date";
+  const today = localDayKey(new Date());
+  const yesterdayDate = new Date();
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterday = localDayKey(yesterdayDate);
+  if (dayKey === today) return "Today";
+  if (dayKey === yesterday) return "Yesterday";
+  const date = new Date(`${dayKey}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return dayKey;
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function gameSelectOptions(games) {
+  return (games || [])
+    .map((game) => ({
+      value: String(game.id),
+      label: game.name,
+      photo: game.photo_url || "",
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
 /**
  * Cumulative time_spent: each calendar day from the previous event adds dailyBudget
  * (skipped empty days still count). Multiple events on the same day split that day's total.
@@ -625,7 +692,7 @@ export default function App() {
           />
           <Route
             path="/jobs/scheduled"
-            element={<ScheduledJobsPage jobs={jobs} onRefresh={load} {...flash} />}
+            element={<ScheduledJobsPage jobs={jobs} games={games} onRefresh={load} {...flash} />}
           />
           <Route
             path="/jobs/active"
@@ -1301,13 +1368,22 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
                     className="game-title"
                     onClick={() => setExpandedGameId(expanded ? null : game.id)}
                   >
-                    <strong>{game.name}</strong>
-                    <span className="sub">
-                      {game.variables.length} variable{game.variables.length === 1 ? "" : "s"} · {gamePlans.length} plan
-                      {gamePlans.length === 1 ? "" : "s"}
-                      {game.notices ? " · has notices" : ""}
+                    <span className="game-title-row">
+                      {game.photo_url ? (
+                        <img className="game-thumb" src={game.photo_url} alt="" />
+                      ) : (
+                        <span className="game-thumb game-thumb-empty" aria-hidden="true" />
+                      )}
+                      <span className="game-title-text">
+                        <strong>{game.name}</strong>
+                        <span className="sub">
+                          {game.variables.length} variable{game.variables.length === 1 ? "" : "s"} ·{" "}
+                          {gamePlans.length} plan{gamePlans.length === 1 ? "" : "s"}
+                          {game.notices ? " · has notices" : ""}
+                        </span>
+                        {isAdmin && audit ? <span className="sub game-audit">{audit}</span> : null}
+                      </span>
                     </span>
-                    {isAdmin && audit ? <span className="sub game-audit">{audit}</span> : null}
                   </button>
                   <div className="actions tight">
                     {isAdmin && (
@@ -1331,6 +1407,11 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
 
                 {expanded && (
                   <div className="game-item-detail">
+                    {game.photo_url ? (
+                      <div className="game-photo-preview">
+                        <img src={game.photo_url} alt={`${game.name} cover`} />
+                      </div>
+                    ) : null}
                     {game.notices ? (
                       <div className="game-notices">
                         <h3>Notices</h3>
@@ -1416,8 +1497,12 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
   const existing = games.find((game) => game.id === editingId);
   const emptyVariables = [{ name: "Level 30", value: "" }];
   const dirtyRef = useRef(false);
+  const photoInputRef = useRef(null);
   const [gameName, setGameName] = useState(existing?.name || "");
   const [notices, setNotices] = useState(existing?.notices || "");
+  const [photoPreview, setPhotoPreview] = useState(existing?.photo_url || "");
+  const [photoData, setPhotoData] = useState("");
+  const [removePhoto, setRemovePhoto] = useState(false);
   const [variables, setVariables] = useState(
     existing
       ? existing.variables.map((variable) => ({
@@ -1437,12 +1522,18 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
       if (dirtyRef.current) return;
       setGameName("");
       setNotices("");
+      setPhotoPreview("");
+      setPhotoData("");
+      setRemovePhoto(false);
       setVariables(emptyVariables);
       return;
     }
     if (!existing || dirtyRef.current) return;
     setGameName(existing.name);
     setNotices(existing.notices || "");
+    setPhotoPreview(existing.photo_url || "");
+    setPhotoData("");
+    setRemovePhoto(false);
     setVariables(
       existing.variables.map((variable) => ({
         id: variable.id,
@@ -1477,11 +1568,41 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
     setVariables((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const onPickPhoto = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setError("");
+    try {
+      const dataUrl = await readImageAsDataUrl(file);
+      dirtyRef.current = true;
+      setPhotoData(dataUrl);
+      setPhotoPreview(dataUrl);
+      setRemovePhoto(false);
+      setMessage("Photo ready — save the game to keep it.");
+    } catch (err) {
+      setError(err.message || "Could not read photo");
+    }
+  };
+
+  const clearPhoto = () => {
+    dirtyRef.current = true;
+    setPhotoData("");
+    setPhotoPreview("");
+    setRemovePhoto(Boolean(existing?.photo_url));
+  };
+
   const saveGame = async (event) => {
     event.preventDefault();
     setError("");
     try {
-      const payload = { name: gameName, notices, variables };
+      const payload = {
+        name: gameName,
+        notices,
+        variables,
+        remove_photo: removePhoto,
+      };
+      if (photoData) payload.photo_data = photoData;
       if (editingId) {
         await api.updateGame(editingId, payload);
         setMessage("Game updated.");
@@ -1515,7 +1636,7 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
       <div className="panel-head">
         <div>
           <h2>{editingId ? "Edit game" : "Add game"}</h2>
-          <p className="sub">Name the game, optional notices, then add variables (level name + value).</p>
+          <p className="sub">Name, optional photo & notices, then levels.</p>
         </div>
         <Link className="btn" to="/games">
           Back to games
@@ -1532,6 +1653,33 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
           required
           placeholder="Game-1"
         />
+        <label>
+          Photo <span className="sub">(optional)</span>
+        </label>
+        <div className="game-photo-editor">
+          {photoPreview ? (
+            <img className="game-photo-editor-preview" src={photoPreview} alt="Game preview" />
+          ) : (
+            <div className="game-photo-editor-empty">No photo</div>
+          )}
+          <div className="actions tight">
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={onPickPhoto}
+            />
+            <button type="button" className="btn" onClick={() => photoInputRef.current?.click()}>
+              {photoPreview ? "Change photo" : "Add photo"}
+            </button>
+            {photoPreview ? (
+              <button type="button" className="btn danger" onClick={clearPhoto}>
+                Remove photo
+              </button>
+            ) : null}
+          </div>
+        </div>
         <label>
           Notices <span className="sub">(optional)</span>
         </label>
@@ -2414,15 +2562,14 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
           )}
         </div>
 
-        <label>Game</label>
-        <select value={gameId} onChange={(e) => onPickGame(e.target.value)} required>
-          <option value="">Select a game</option>
-          {games.map((game) => (
-            <option key={game.id} value={game.id}>
-              {game.name}
-            </option>
-          ))}
-        </select>
+        <SearchableSelect
+          label="Game"
+          value={gameId}
+          onChange={onPickGame}
+          options={gameSelectOptions(games)}
+          allLabel="Select a game"
+          placeholder="Search games…"
+        />
         {selectedGame?.notices ? (
           <div className="game-notices">
             <h3>Notices · {selectedGame.name}</h3>
@@ -2795,11 +2942,13 @@ function SearchableSelect({ label, value, onChange, options, allLabel, placehold
   const [query, setQuery] = useState("");
   const rootRef = useRef(null);
 
-  const selectedLabel = useMemo(() => {
-    if (!value) return allLabel;
-    const match = options.find((opt) => opt.value === value);
-    return match ? match.label : value;
-  }, [value, options, allLabel]);
+  const selected = useMemo(() => {
+    if (!value) return null;
+    return options.find((opt) => opt.value === value) || null;
+  }, [value, options]);
+
+  const selectedLabel = selected ? selected.label : allLabel;
+  const showPhotos = useMemo(() => options.some((opt) => opt.photo), [options]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -2818,6 +2967,12 @@ function SearchableSelect({ label, value, onChange, options, allLabel, placehold
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
+  const renderPhoto = (photo, className = "search-select-thumb") => {
+    if (!showPhotos) return null;
+    if (photo) return <img className={className} src={photo} alt="" />;
+    return <span className={`${className} search-select-thumb-empty`} aria-hidden="true" />;
+  };
+
   return (
     <div className="search-select" ref={rootRef}>
       <label>{label}</label>
@@ -2829,7 +2984,10 @@ function SearchableSelect({ label, value, onChange, options, allLabel, placehold
           setQuery("");
         }}
       >
-        <span>{selectedLabel}</span>
+        <span className="search-select-trigger-main">
+          {renderPhoto(selected?.photo || "")}
+          <span>{selectedLabel}</span>
+        </span>
         <span className="sub">▾</span>
       </button>
       {open && (
@@ -2849,7 +3007,14 @@ function SearchableSelect({ label, value, onChange, options, allLabel, placehold
               setQuery("");
             }}
           >
-            {allLabel}
+            {showPhotos ? (
+              <span className="search-select-option-main">
+                <span className="search-select-thumb search-select-thumb-empty" aria-hidden="true" />
+                <span>{allLabel}</span>
+              </span>
+            ) : (
+              allLabel
+            )}
           </button>
           {filtered.length === 0 && <div className="sub search-select-empty">No matches</div>}
           {filtered.map((opt) => (
@@ -2863,7 +3028,10 @@ function SearchableSelect({ label, value, onChange, options, allLabel, placehold
                 setQuery("");
               }}
             >
-              {opt.label}
+              <span className="search-select-option-main">
+                {renderPhoto(opt.photo || "")}
+                <span>{opt.label}</span>
+              </span>
             </button>
           ))}
         </div>
@@ -2872,7 +3040,7 @@ function SearchableSelect({ label, value, onChange, options, allLabel, placehold
   );
 }
 
-function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
+function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromUrl = searchParams.get("account") || "";
   const [showFull, setShowFull] = useState(Boolean(accountFromUrl));
@@ -2897,14 +3065,21 @@ function ScheduledJobsPage({ jobs, onRefresh, setError, setMessage }) {
   }, [jobs]);
 
   const gameOptions = useMemo(() => {
-    const map = new Map();
+    const fromJobs = new Map();
     for (const job of jobs) {
-      if (job.game_id && job.game_name) map.set(String(job.game_id), job.game_name);
+      if (job.game_id && job.game_name) fromJobs.set(String(job.game_id), job.game_name);
     }
-    return [...map.entries()]
-      .map(([id, name]) => ({ value: id, label: name }))
+    const photoById = new Map(
+      (games || []).map((game) => [String(game.id), game.photo_url || ""])
+    );
+    return [...fromJobs.entries()]
+      .map(([id, name]) => ({
+        value: id,
+        label: name,
+        photo: photoById.get(id) || "",
+      }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [jobs]);
+  }, [jobs, games]);
 
   const hasFilters = Boolean(
     accountFilter || gameFilter || statusFilter || kindFilter || (dateFilter && dateFilter !== "all")
@@ -3281,15 +3456,10 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [gameFilter, setGameFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState("all");
   const gameFilterRef = useRef("");
 
-  const gameOptions = useMemo(
-    () =>
-      (games || [])
-        .map((game) => ({ value: String(game.id), label: game.name }))
-        .sort((a, b) => a.label.localeCompare(b.label)),
-    [games]
-  );
+  const gameOptions = useMemo(() => gameSelectOptions(games), [games]);
 
   const loadAccounts = async ({ silent = false, gameId = gameFilterRef.current } = {}) => {
     if (!silent) setLoading(true);
@@ -3321,13 +3491,30 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
     loadAccounts({ gameId: next }).catch(() => {});
   };
 
+  const filteredAccounts = useMemo(
+    () => accounts.filter((account) => matchesDateFilter(account.added_at, dateFilter)),
+    [accounts, dateFilter]
+  );
+
+  const dayGroups = useMemo(() => {
+    const map = new Map();
+    for (const account of filteredAccounts) {
+      const key = localDayKey(account.added_at) || "unknown";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(account);
+    }
+    return [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  }, [filteredAccounts]);
+
+  const hasFilters = Boolean(gameFilter || (dateFilter && dateFilter !== "all"));
+
   return (
     <section className="panel">
       <div className="panel-head">
         <div>
           <h2>Active accounts</h2>
           <p className="sub">
-            Accounts that still have pending or running jobs. Filter by game. Auto-refreshes every 5s.
+            Pending/running accounts, grouped by the day they were added. Auto-refreshes every 5s.
           </p>
         </div>
         <div className="actions tight">
@@ -3349,81 +3536,117 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
             allLabel="All games"
             placeholder="Search games…"
           />
+          <div>
+            <label>Added</label>
+            <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
+              <option value="all">All dates</option>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="7d">Last 7 days</option>
+            </select>
+          </div>
         </div>
-        {gameFilter && (
+        {hasFilters && (
           <div className="actions tight filter-actions">
-            <button type="button" className="btn" onClick={() => onGameFilter("")}>
-              Clear filter
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                onGameFilter("");
+                setDateFilter("all");
+              }}
+            >
+              Clear filters
             </button>
           </div>
         )}
         {loading && <p className="sub">Loading…</p>}
-        {!loading && accounts.length === 0 && (
+        {!loading && filteredAccounts.length === 0 && (
           <p className="sub">
-            {gameFilter
-              ? "No active accounts for this game."
+            {hasFilters
+              ? "No active accounts match these filters."
               : "No active accounts — everything finished or nothing scheduled."}
           </p>
         )}
-        {!loading && accounts.length > 0 && (
+        {!loading && dayGroups.length > 0 && (
           <div className="active-account-list">
-            <p className="sub">{accounts.length} active account{accounts.length === 1 ? "" : "s"}</p>
-            <ul className="active-account-names">
-              {accounts.map((account) => (
-                <li
-                  key={`${account.account_name}-${account.game_id || "none"}`}
-                  className="active-account-item"
-                >
-                  <div>
-                    <CopyableAccount
-                      value={account.account_name}
-                      setMessage={setMessage}
-                      setError={setError}
-                    />
-                    {account.game_name ? (
-                      <div className="sub">{account.game_name}</div>
-                    ) : null}
-                  </div>
-                  <div className="actions tight">
-                    <Link
-                      className="btn btn-info"
-                      to={`/jobs/scheduled?account=${encodeURIComponent(account.account_name)}`}
+            <p className="sub">
+              {filteredAccounts.length} active account{filteredAccounts.length === 1 ? "" : "s"}
+              {dayGroups.length > 1 ? ` · ${dayGroups.length} days` : ""}
+            </p>
+            {dayGroups.map(([dayKey, dayAccounts]) => (
+              <section key={dayKey} className="active-day-group">
+                <div className="active-day-header">
+                  <h3>{formatDayHeading(dayKey)}</h3>
+                  <span className="sub">
+                    {dayAccounts.length} account{dayAccounts.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <ul className="active-account-names">
+                  {dayAccounts.map((account) => (
+                    <li
+                      key={`${account.account_name}-${account.game_id || "none"}`}
+                      className="active-account-item"
                     >
-                      Open schedule
-                    </Link>
-                    <button
-                      type="button"
-                      className="btn btn-danger"
-                      onClick={async () => {
-                        if (
-                          !(await confirmAction(
-                            `Delete account "${account.account_name}" and all its jobs?`,
-                            {
-                              title: "Delete account",
-                              confirmLabel: "Delete account",
-                              danger: true,
+                      <div>
+                        <CopyableAccount
+                          value={account.account_name}
+                          setMessage={setMessage}
+                          setError={setError}
+                        />
+                        <div className="sub">
+                          {account.game_name ? `${account.game_name} · ` : ""}
+                          added{" "}
+                          {account.added_at
+                            ? new Date(account.added_at).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })
+                            : "—"}
+                        </div>
+                      </div>
+                      <div className="actions tight">
+                        <Link
+                          className="btn btn-info"
+                          to={`/jobs/scheduled?account=${encodeURIComponent(account.account_name)}`}
+                        >
+                          Open schedule
+                        </Link>
+                        <button
+                          type="button"
+                          className="btn btn-danger"
+                          onClick={async () => {
+                            if (
+                              !(await confirmAction(
+                                `Delete account "${account.account_name}" and all its jobs?`,
+                                {
+                                  title: "Delete account",
+                                  confirmLabel: "Delete account",
+                                  danger: true,
+                                }
+                              ))
+                            ) {
+                              return;
                             }
-                          ))
-                        ) {
-                          return;
-                        }
-                        try {
-                          const result = await api.deleteAccountByName(account.account_name);
-                          setMessage(
-                            `Deleted ${account.account_name} (${result.deleted_jobs} jobs).`
-                          );
-                          await Promise.all([loadAccounts({ silent: true }), onRefresh()]);
-                        } catch (err) {
-                          setError(err.message);
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+                            try {
+                              const result = await api.deleteAccountByName(account.account_name);
+                              setMessage(
+                                `Deleted ${account.account_name} (${result.deleted_jobs} jobs).`
+                              );
+                              await Promise.all([loadAccounts({ silent: true }), onRefresh()]);
+                            } catch (err) {
+                              setError(err.message);
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
           </div>
         )}
       </div>
@@ -3997,10 +4220,7 @@ function HistoryPage({ games }) {
     () => accounts.map((name) => ({ value: name, label: name })),
     [accounts]
   );
-  const gameOptions = useMemo(
-    () => games.map((game) => ({ value: String(game.id), label: game.name })),
-    [games]
-  );
+  const gameOptions = useMemo(() => gameSelectOptions(games), [games]);
   const filteredRuns = useMemo(
     () =>
       runs.filter((run) => {

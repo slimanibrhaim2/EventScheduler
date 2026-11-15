@@ -1024,6 +1024,37 @@ code {
   border-color: #6a8aa8;
 }
 
+.search-select-trigger-main,
+.search-select-option-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.search-select-trigger-main > span:last-child,
+.search-select-option-main > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-select-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  object-fit: cover;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-2) 80%, transparent);
+}
+
+.search-select-thumb-empty {
+  display: inline-block;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent, #3dd6c6) 22%, transparent), transparent);
+}
+
 .search-select-menu {
   position: absolute;
   z-index: 20;
@@ -1929,12 +1960,105 @@ code {
   overflow-wrap: anywhere;
 }
 
+.game-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  min-width: 0;
+}
+
+.game-title-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.game-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-2) 80%, transparent);
+}
+
+.game-thumb-empty {
+  display: inline-block;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent, #3dd6c6) 25%, transparent), transparent);
+}
+
+.game-photo-preview {
+  margin-bottom: 14px;
+}
+
+.game-photo-preview img {
+  display: block;
+  width: min(100%, 320px);
+  max-height: 180px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.game-photo-editor {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.game-photo-editor-preview {
+  width: min(100%, 220px);
+  height: 140px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.game-photo-editor-empty {
+  width: min(100%, 220px);
+  height: 140px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  border: 1px dashed var(--line);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .game-notices {
   margin-bottom: 14px;
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--accent, #3dd6c6) 35%, var(--line));
   border-radius: 12px;
   background: color-mix(in srgb, var(--accent, #3dd6c6) 8%, transparent);
+}
+
+.active-day-group {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.active-day-group + .active-day-group {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+}
+
+.active-day-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.active-day-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
 }
 
 .game-notices h3 {

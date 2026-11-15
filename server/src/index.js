@@ -1,11 +1,13 @@
 require("dotenv").config();
 
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const { migrate } = require("./db");
 const { startScheduler } = require("./scheduler");
 const { initFirebaseAdmin } = require("./authFirebase");
 const { requireAuth, requireApproved } = require("./middleware/auth");
+const { ensureUploadDir } = require("./gamePhoto");
 const auth = require("./routes/auth");
 const jobs = require("./routes/jobs");
 const proxies = require("./routes/proxies");
@@ -30,7 +32,9 @@ app.use(
     },
   })
 );
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "3mb" }));
+ensureUploadDir();
+app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, firebase: initFirebaseAdmin() });

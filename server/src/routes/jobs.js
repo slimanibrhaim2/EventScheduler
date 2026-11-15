@@ -488,7 +488,8 @@ router.get("/accounts/active", async (req, res) => {
     `SELECT
        SPLIT_PART(MIN(j.name), ' · ', 1) AS account_name,
        MIN(j.game_id) AS game_id,
-       MIN(g.name) AS game_name
+       MIN(g.name) AS game_name,
+       MIN(j.created_at) AS added_at
      FROM jobs j
      LEFT JOIN games g ON g.id = j.game_id
      WHERE j.user_id = $1
@@ -496,7 +497,7 @@ router.get("/accounts/active", async (req, res) => {
        AND SPLIT_PART(j.name, ' · ', 1) <> ''
        ${gameFilter}
      GROUP BY LOWER(SPLIT_PART(j.name, ' · ', 1)), j.game_id
-     ORDER BY account_name`,
+     ORDER BY MIN(j.created_at) DESC, account_name`,
     params
   );
   res.json(result.rows);
