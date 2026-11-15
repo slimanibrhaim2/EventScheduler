@@ -1,7 +1,7 @@
 const express = require("express");
 const { query } = require("../db");
 const { requireAdmin } = require("../middleware/auth");
-const { saveGamePhoto, deleteGamePhoto } = require("../gamePhoto");
+const { saveGamePhoto, deleteGamePhoto, publicPhotoUrl } = require("../gamePhoto");
 
 const router = express.Router();
 
@@ -16,6 +16,11 @@ const GAME_SELECT = `
   LEFT JOIN app_users uu ON uu.id = g.updated_by
 `;
 
+function withPublicPhoto(game) {
+  if (!game) return game;
+  return { ...game, photo_url: publicPhotoUrl(game.photo_url) };
+}
+
 async function getGameWithVariables(id) {
   const game = await query(`${GAME_SELECT} WHERE g.id = $1`, [id]);
   if (!game.rows[0]) return null;
@@ -23,7 +28,7 @@ async function getGameWithVariables(id) {
     `SELECT * FROM game_variables WHERE game_id = $1 ORDER BY sort_order, id`,
     [id]
   );
-  return { ...game.rows[0], variables: variables.rows };
+  return withPublicPhoto({ ...game.rows[0], variables: variables.rows });
 }
 
 function cleanVariables(list) {
@@ -45,7 +50,7 @@ router.get("/", async (_req, res) => {
       `SELECT * FROM game_variables WHERE game_id = $1 ORDER BY sort_order, id`,
       [game.id]
     );
-    result.push({ ...game, variables: variables.rows });
+    result.push(withPublicPhoto({ ...game, variables: variables.rows }));
   }
   res.json(result);
 });

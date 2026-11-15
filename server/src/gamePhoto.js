@@ -4,6 +4,8 @@ const crypto = require("crypto");
 
 const UPLOAD_ROOT = path.join(__dirname, "..", "uploads", "games");
 const MAX_BYTES = 1_800_000; // ~1.8MB decoded
+const PUBLIC_PREFIX = "/api/game-photos";
+const LEGACY_PREFIX = "/uploads/games";
 
 function ensureUploadDir() {
   fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
@@ -16,7 +18,32 @@ function extensionForMime(mime) {
   return "jpg";
 }
 
-/** Save a data-URL or raw base64 image. Returns public path `/uploads/games/...`. */
+function photoBasename(photoUrl) {
+  if (!photoUrl || typeof photoUrl !== "string") return "";
+  if (photoUrl.startsWith("data:")) return "";
+  if (!photoUrl.startsWith(`${PUBLIC_PREFIX}/`) && !photoUrl.startsWith(`${LEGACY_PREFIX}/`)) {
+    return "";
+  }
+  const base = path.basename(photoUrl.split("?")[0]);
+  if (!base || base === "." || base === ".." || base.includes("\0")) return "";
+  return base;
+}
+
+/** Normalize stored paths to the public API route (works through nginx /api proxy). */
+function publicPhotoUrl(photoUrl) {
+  if (!photoUrl || typeof photoUrl !== "string") return "";
+  if (photoUrl.startsWith("data:")) return photoUrl;
+  const base = photoBasename(photoUrl);
+  return base ? `${PUBLIC_PREFIX}/${base}` : "";
+}
+
+function absolutePhotoPath(photoUrl) {
+  const base = photoBasename(photoUrl);
+  if (!base) return null;
+  return path.join(UPLOAD_ROOT, base);
+}
+
+/** Save a data-URL or raw base64 image. Returns public path `/api/game-photos/...`. */
 function saveGamePhoto(dataUrl, gameIdHint = "game") {
   const text = String(dataUrl || "").trim();
   if (!text) return null;
@@ -43,15 +70,12 @@ function saveGamePhoto(dataUrl, gameIdHint = "game") {
   const name = `${safeHint}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${ext}`;
   const filePath = path.join(UPLOAD_ROOT, name);
   fs.writeFileSync(filePath, buffer);
-  return `/uploads/games/${name}`;
+  return `${PUBLIC_PREFIX}/${name}`;
 }
 
 function deleteGamePhoto(photoUrl) {
-  if (!photoUrl || typeof photoUrl !== "string") return;
-  if (!photoUrl.startsWith("/uploads/games/")) return;
-  const base = path.basename(photoUrl);
-  if (!base || base === "." || base === "..") return;
-  const filePath = path.join(UPLOAD_ROOT, base);
+  const filePath = absolutePhotoPath(photoUrl);
+  if (!filePath) return;
   try {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   } catch {
@@ -59,4 +83,21 @@ function deleteGamePhoto(photoUrl) {
   }
 }
 
-module.exports = { saveGamePhoto, deleteGamePhoto, UPLOAD_ROOT, ensureUploadDir };
+function mimeForFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".gif") return "image/gif";
+  return "image/jpeg";
+}
+
+module.exports = {
+  saveGamePhoto,
+  deleteGamePhoto,
+  publicPhotoUrl,
+  absolutePhotoPath,
+  mimeForFile,
+  UPLOAD_ROOT,
+  ensureUploadDir,
+  PUBLIC_PREFIX,
+};

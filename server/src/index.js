@@ -7,7 +7,12 @@ const { migrate } = require("./db");
 const { startScheduler } = require("./scheduler");
 const { initFirebaseAdmin } = require("./authFirebase");
 const { requireAuth, requireApproved } = require("./middleware/auth");
-const { ensureUploadDir } = require("./gamePhoto");
+const {
+  ensureUploadDir,
+  absolutePhotoPath,
+  mimeForFile,
+  PUBLIC_PREFIX,
+} = require("./gamePhoto");
 const auth = require("./routes/auth");
 const jobs = require("./routes/jobs");
 const proxies = require("./routes/proxies");
@@ -38,6 +43,17 @@ app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, firebase: initFirebaseAdmin() });
+});
+
+/** Public game photos — goes through nginx /api proxy (no auth; filenames are unguessable). */
+app.get(`${PUBLIC_PREFIX}/:file`, (req, res) => {
+  const filePath = absolutePhotoPath(`${PUBLIC_PREFIX}/${req.params.file}`);
+  if (!filePath) return res.status(404).end();
+  res.setHeader("Cache-Control", "public, max-age=604800");
+  res.type(mimeForFile(filePath));
+  res.sendFile(filePath, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
 });
 
 function asyncRouter(router) {
