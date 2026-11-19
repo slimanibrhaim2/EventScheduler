@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   plan_step_id INTEGER,
   batch_id TEXT,
   request_kind TEXT,
+  notes TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -2343,10 +2343,11 @@ function JobsPage({ accountNames, proxies, games, plans, settings, onRefresh, se
   const [raw, setRaw] = useState("");
   const [fileName, setFileName] = useState("");
   const [dragging, setDragging] = useState(false);
-  const [requestExpanded, setRequestExpanded] = useState(false);
+  const [notesExpanded, setNotesExpanded] = useState(false);
   const [planPreview, setPlanPreview] = useState(null);
   const [creatingPlan, setCreatingPlan] = useState(false);
   const [nameError, setNameError] = useState("");
+  const [notes, setNotes] = useState("");
 
   const fleetConfigured = Boolean(settings?.fleet_user && settings?.fleet_pass);
   const countryRegions = useMemo(() => regionsForCountry(fleetCountry), [fleetCountry]);
@@ -2408,7 +2409,6 @@ function JobsPage({ accountNames, proxies, games, plans, settings, onRefresh, se
     setRaw(text);
     setFileName(file.name);
     setName(batch);
-    setRequestExpanded(false);
     if (accountNameTaken(accountNames, batch)) {
       const hint = accountNameHint(true);
       setNameError(hint);
@@ -2495,7 +2495,7 @@ function JobsPage({ accountNames, proxies, games, plans, settings, onRefresh, se
     setError("");
     setMessage("");
     if (!gameId || !planId || !raw.trim()) {
-      setError("Choose a game, a plan, and a request file or paste");
+      setError("Choose a game, a plan, and a request .txt file");
       return;
     }
     if (!name.trim()) {
@@ -2548,15 +2548,17 @@ function JobsPage({ accountNames, proxies, games, plans, settings, onRefresh, se
               }
             : undefined,
         raw,
+        notes: notes.trim(),
       });
       setMessage(`Scheduled ${result.count} jobs from the plan.`);
       setName("");
       setNameError("");
+      setNotes("");
+      setNotesExpanded(false);
       setRaw("");
       setFileName("");
       setPlanPreview(null);
       setCreatingPlan(false);
-      setRequestExpanded(false);
       await onRefresh();
       navigate("/jobs/scheduled");
     } catch (err) {
@@ -2568,7 +2570,6 @@ function JobsPage({ accountNames, proxies, games, plans, settings, onRefresh, se
   };
 
   const fromFile = Boolean(fileName);
-  const requestReady = Boolean(raw.trim());
   const nameTaken = accountNameTaken(accountNames, name);
 
   return (
@@ -2621,34 +2622,30 @@ function JobsPage({ accountNames, proxies, games, plans, settings, onRefresh, se
 
         <div className="request-block">
           <div className="request-block-head">
-            <label>{fromFile ? "Request content" : "Paste request"}</label>
+            <label>
+              Notes <span className="sub">(optional)</span>
+            </label>
             <button
               type="button"
               className="btn"
-              onClick={() => setRequestExpanded((open) => !open)}
+              onClick={() => setNotesExpanded((open) => !open)}
             >
-              {requestExpanded ? "Collapse" : "Expand"}
+              {notesExpanded ? "Collapse" : "Expand"}
             </button>
           </div>
-          {!requestExpanded ? (
+          {!notesExpanded ? (
             <div className="request-collapsed sub">
-              {requestReady
-                ? fromFile
-                  ? "File loaded. Press Expand to read the request."
-                  : "Request text ready. Press Expand to edit or read it."
-                : "Press Expand to paste a request, or drop a .txt file above."}
+              {notes.trim()
+                ? "Notes saved. Press Expand to edit."
+                : "Press Expand to add optional notes for this account."}
             </div>
-          ) : fromFile ? (
-            <pre className="request-preview">{raw || "(empty)"}</pre>
           ) : (
             <textarea
-              className="request-paste"
-              value={raw}
-              onChange={(e) => {
-                setRaw(e.target.value);
-                if (!e.target.value.trim()) setFileName("");
-              }}
-              placeholder={"POST /event HTTP/1.1\nHost: example.com\nContent-Type: application/x-www-form-urlencoded\n\nevent_token=PLACEHOLDER&time_spent=PLACEHOLDER"}
+              className="notes-input"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Anything useful about this account…"
+              rows={3}
             />
           )}
         </div>
@@ -3261,6 +3258,7 @@ function ScheduledJobsPage({ games, onRefresh, setError, setMessage }) {
       game: sample.game_name || "—",
       plan: sample.plan_name || "manual",
       proxy: sample.proxy_name || "direct",
+      notes: sample.notes || "",
       addedAt: sample.created_at,
       remaining: total,
       total,
@@ -3437,6 +3435,7 @@ function ScheduledJobsPage({ games, onRefresh, setError, setMessage }) {
                       {job.game_name ? `${job.game_name} · ` : ""}
                       {job.plan_name || "manual"}
                     </div>
+                    {job.notes ? <div className="sub account-notes">{job.notes}</div> : null}
                   </td>
                   <td>
                     <span className={`kind-tag kind-${kind}`}>{task}</span>
@@ -3599,6 +3598,12 @@ function ScheduledJobsPage({ games, onRefresh, setError, setMessage }) {
                   {accountDetails.remaining} matching · showing {jobs.length}
                 </div>
               </div>
+              {accountDetails.notes ? (
+                <div className="account-details-notes">
+                  <div className="sub">Notes</div>
+                  <div className="account-notes">{accountDetails.notes}</div>
+                </div>
+              ) : null}
             </div>
           </div>
         )}
@@ -3777,6 +3782,9 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
                               })
                             : "—"}
                         </div>
+                        {account.notes ? (
+                          <div className="sub account-notes">{account.notes}</div>
+                        ) : null}
                       </div>
                       <div className="actions tight">
                         <Link
@@ -3970,6 +3978,9 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
                       setMessage={setMessage}
                       setError={setError}
                     />
+                    {account.notes ? (
+                      <div className="sub account-notes">{account.notes}</div>
+                    ) : null}
                   </td>
                   <td>
                     <div>{account.game_name || "—"}</div>

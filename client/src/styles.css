@@ -630,6 +630,10 @@ html[data-theme="light"] .game-item {
   letter-spacing: 0.05em;
 }
 
+.account-details-notes {
+  grid-column: 1 / -1;
+}
+
 .page {
   max-width: 1120px;
   margin: 0 auto;
@@ -708,6 +712,14 @@ html[data-theme="light"] .game-item {
   font-size: 13px;
 }
 
+.account-notes {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 28rem;
+  font-style: italic;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -769,6 +781,13 @@ textarea {
   min-height: 110px;
   font-family: Consolas, monospace;
   font-size: 13px;
+}
+
+textarea.notes-input {
+  min-height: 72px;
+  font-family: inherit;
+  font-size: 14px;
+  resize: vertical;
 }
 
 .row {

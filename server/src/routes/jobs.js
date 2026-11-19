@@ -59,11 +59,12 @@ async function insertJob({
   plan_step_id,
   batch_id,
   request_kind,
+  notes,
 }) {
   const result = await query(
     `INSERT INTO jobs
-      (name, method, url, headers, body, run_at, proxy_id, user_id, game_id, plan_id, plan_step_id, batch_id, request_kind)
-     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      (name, method, url, headers, body, run_at, proxy_id, user_id, game_id, plan_id, plan_step_id, batch_id, request_kind, notes)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
       name,
@@ -79,6 +80,7 @@ async function insertJob({
       plan_step_id || null,
       batch_id,
       request_kind,
+      String(notes || "").trim(),
     ]
   );
   return result.rows[0];
@@ -191,7 +193,7 @@ router.get("/", async (req, res) => {
   const selectCols = `
     j.id, j.name, j.method, j.url, j.run_at, j.status,
     j.proxy_id, j.user_id, j.game_id, j.plan_id, j.plan_step_id, j.batch_id,
-    j.request_kind, j.created_at, j.updated_at,
+    j.request_kind, j.notes, j.created_at, j.updated_at,
     p.name AS proxy_name, g.name AS game_name, pl.name AS plan_name,
     COALESCE(
       j.request_kind,
@@ -329,12 +331,13 @@ router.post("/", async (req, res) => {
 });
 
 router.post("/from-plan", async (req, res) => {
-  const { name, game_id, plan_id, proxy_id, raw, fleet } = req.body;
+  const { name, game_id, plan_id, proxy_id, raw, fleet, notes } = req.body;
   if (!name || !game_id || !plan_id || !raw) {
     return res.status(400).json({ error: "name, game_id, plan_id, and request file text are required" });
   }
 
   const userId = req.appUser.id;
+  const accountNotes = String(notes || "").trim();
 
   let parsed;
   try {
@@ -516,6 +519,7 @@ router.post("/from-plan", async (req, res) => {
       plan_step_id: null,
       batch_id: batchId,
       request_kind: "session",
+      notes: accountNotes,
     });
   }
 
@@ -628,6 +632,7 @@ router.post("/from-plan", async (req, res) => {
           plan_step_id: step.id,
           batch_id: batchId,
           request_kind: "event",
+          notes: accountNotes,
         })
       );
       if (nextEventToken) lastEventToken = nextEventToken;
@@ -692,7 +697,8 @@ router.get("/accounts/active", async (req, res) => {
        SPLIT_PART(MIN(j.name), ' · ', 1) AS account_name,
        MIN(j.game_id) AS game_id,
        MIN(g.name) AS game_name,
-       MIN(j.created_at) AS added_at
+       MIN(j.created_at) AS added_at,
+       MAX(NULLIF(j.notes, '')) AS notes
      FROM jobs j
      LEFT JOIN games g ON g.id = j.game_id
      WHERE ${whereSql}
@@ -744,7 +750,8 @@ router.get("/accounts/finished", async (req, res) => {
        COUNT(*) FILTER (WHERE j.status = 'failed')::int AS failed_count,
        MIN(j.created_at) AS started_at,
        MAX(j.updated_at) AS finished_at,
-       MAX(j.run_at) AS last_run_at
+       MAX(j.run_at) AS last_run_at,
+       MAX(NULLIF(j.notes, '')) AS notes
      FROM jobs j
      LEFT JOIN games g ON g.id = j.game_id
      LEFT JOIN plans pl ON pl.id = j.plan_id
