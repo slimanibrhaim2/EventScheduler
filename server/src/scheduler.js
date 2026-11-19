@@ -93,48 +93,73 @@ async function sendJobRequest(job, proxy) {
   });
 }
 
+async function finishJobSuccess(job, response) {
+  const body = storeBody(response.data);
+  const headers = response.headers || {};
+  const ok = response.status >= 200 && response.status < 400;
+
+  await insertJobRun(job, {
+    ok,
+    statusCode: response.status,
+    preview: body.slice(0, 500),
+    body,
+    headers,
+    error: ok ? null : `HTTP ${response.status}`,
+  });
+  await query(`UPDATE jobs SET status = $2, updated_at = NOW() WHERE id = $1`, [
+    job.id,
+    ok ? "done" : "failed",
+  ]);
+  if (!ok) {
+    await notifyJobFailure(job, `HTTP ${response.status}`, {
+      statusCode: response.status,
+      responseBody: body,
+    });
+  }
+  await maybeNotifyBatchFinished(job);
+}
+
+async function finishJobFailure(job, errorText, responseBody) {
+  await insertJobRun(job, {
+    ok: false,
+    error: errorText,
+  });
+  await query(`UPDATE jobs SET status = 'failed', updated_at = NOW() WHERE id = $1`, [
+    job.id,
+  ]);
+  await notifyJobFailure(job, errorText, {
+    responseBody: responseBody || errorText,
+  });
+  await maybeNotifyBatchFinished(job);
+}
+
+/**
+ * Send once. Only on specific proxy/connection errors, try again (up to 3 total).
+ * Stops immediately after the first successful HTTP response — never sends the
+ * remaining attempts if try #1 (or #2) already worked.
+ */
 async function executeJob(job) {
   const proxy = await loadProxy(job);
   let lastError = null;
   let attempts = 0;
 
   try {
-    while (attempts < PROXY_MAX_ATTEMPTS) {
-      attempts += 1;
+    for (let attempt = 1; attempt <= PROXY_MAX_ATTEMPTS; attempt += 1) {
+      attempts = attempt;
       try {
         const response = await sendJobRequest(job, proxy);
-        const body = storeBody(response.data);
-        const headers = response.headers || {};
-        const ok = response.status >= 200 && response.status < 400;
-
-        // One history row only — after the final successful send (retries are not stored).
-        await insertJobRun(job, {
-          ok,
-          statusCode: response.status,
-          preview: body.slice(0, 500),
-          body,
-          headers,
-          error: ok ? null : `HTTP ${response.status}`,
-        });
-        await query(
-          `UPDATE jobs SET status = $2, updated_at = NOW() WHERE id = $1`,
-          [job.id, ok ? "done" : "failed"]
-        );
-        if (!ok) {
-          await notifyJobFailure(job, `HTTP ${response.status}`, {
-            statusCode: response.status,
-            responseBody: body,
-          });
+        // Got an HTTP response → stop. Never fire attempt 2/3 after success.
+        await finishJobSuccess(job, response);
+        if (attempt > 1) {
+          console.log(`job ${job.id} succeeded on attempt ${attempt}/${PROXY_MAX_ATTEMPTS}`);
         }
-        await maybeNotifyBatchFinished(job);
         return;
       } catch (err) {
         lastError = err;
-        if (!isRetryableProxyError(err) || attempts >= PROXY_MAX_ATTEMPTS) {
-          break;
-        }
+        const canRetry = isRetryableProxyError(err) && attempt < PROXY_MAX_ATTEMPTS;
+        if (!canRetry) break;
         console.warn(
-          `job ${job.id} proxy error (attempt ${attempts}/${PROXY_MAX_ATTEMPTS}): ${err.message} — retrying (not stored yet)`
+          `job ${job.id} proxy error on attempt ${attempt}/${PROXY_MAX_ATTEMPTS}: ${err.message} — wait, then try again`
         );
         await sleep(PROXY_RETRY_DELAY_MS);
       }
@@ -143,33 +168,9 @@ async function executeJob(job) {
     const detail = lastError?.message || "Request failed";
     const errorText =
       attempts > 1 ? `${detail} (failed after ${attempts} attempts)` : detail;
-
-    // Store only the final failed result (after retries, if any).
-    await insertJobRun(job, {
-      ok: false,
-      error: errorText,
-    });
-    await query(
-      `UPDATE jobs SET status = 'failed', updated_at = NOW() WHERE id = $1`,
-      [job.id]
-    );
-    await notifyJobFailure(job, errorText, {
-      responseBody: lastError?.response?.data || errorText,
-    });
-    await maybeNotifyBatchFinished(job);
+    await finishJobFailure(job, errorText, lastError?.response?.data || errorText);
   } catch (err) {
-    await insertJobRun(job, {
-      ok: false,
-      error: err.message,
-    });
-    await query(
-      `UPDATE jobs SET status = 'failed', updated_at = NOW() WHERE id = $1`,
-      [job.id]
-    );
-    await notifyJobFailure(job, err.message, {
-      responseBody: err.response?.data || err.message,
-    });
-    await maybeNotifyBatchFinished(job);
+    await finishJobFailure(job, err.message, err.response?.data || err.message);
   }
 }
 

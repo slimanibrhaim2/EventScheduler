@@ -1535,6 +1535,8 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
   const [photoPreview, setPhotoPreview] = useState(existing?.photo_url || "");
   const [photoData, setPhotoData] = useState("");
   const [removePhoto, setRemovePhoto] = useState(false);
+  const [dragIndex, setDragIndex] = useState(null);
+  const [dragOverIndex, setDragOverIndex] = useState(null);
   const [variables, setVariables] = useState(
     existing
       ? existing.variables.map((variable) => ({
@@ -1585,6 +1587,20 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
     setVariables((prev) => prev.map((item, i) => (i === index ? { ...item, [key]: value } : item)));
   };
 
+  const reorderVariable = (fromIndex, toIndex) => {
+    if (fromIndex === toIndex || fromIndex == null || toIndex == null) return;
+    if (fromIndex < 0 || toIndex < 0 || fromIndex >= variables.length || toIndex >= variables.length) {
+      return;
+    }
+    dirtyRef.current = true;
+    setVariables((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, item);
+      return next;
+    });
+  };
+
   const removeVariable = async (index) => {
     if (variables.length === 1) return;
     if (
@@ -1631,7 +1647,11 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
       const payload = {
         name: gameName,
         notices,
-        variables,
+        // Persist current UI order so a new middle level can sit between others.
+        variables: variables.map((variable, index) => ({
+          ...variable,
+          sort_order: index,
+        })),
         remove_photo: removePhoto,
       };
       if (photoData) payload.photo_data = photoData;
@@ -1724,9 +1744,48 @@ function GameFormPage({ games, onRefresh, setError, setMessage }) {
           placeholder="Tips, warnings, or notes for users of this game…"
           rows={4}
         />
-        <label>Levels</label>
+        <label>
+          Levels <span className="sub">(drag ⋮⋮ to reorder)</span>
+        </label>
         {variables.map((variable, index) => (
-          <div className="delay-row" key={variable.id || `new-${index}`}>
+          <div
+            className={`delay-row level-row ${dragIndex === index ? "dragging" : ""} ${
+              dragOverIndex === index ? "drag-over" : ""
+            }`}
+            key={variable.id || `new-${index}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (dragOverIndex !== index) setDragOverIndex(index);
+            }}
+            onDragLeave={() => {
+              if (dragOverIndex === index) setDragOverIndex(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const from = Number(e.dataTransfer.getData("text/plain"));
+              reorderVariable(Number.isFinite(from) ? from : dragIndex, index);
+              setDragIndex(null);
+              setDragOverIndex(null);
+            }}
+          >
+            <button
+              type="button"
+              className="level-drag-handle"
+              title="Drag to reorder"
+              draggable
+              onDragStart={(e) => {
+                setDragIndex(index);
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", String(index));
+              }}
+              onDragEnd={() => {
+                setDragIndex(null);
+                setDragOverIndex(null);
+              }}
+            >
+              ⋮⋮
+            </button>
+            <span className="level-order sub">{index + 1}</span>
             <input
               value={variable.name}
               onChange={(e) => updateVariable(index, "name", e.target.value)}

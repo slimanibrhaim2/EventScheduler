@@ -949,6 +949,49 @@ code {
   align-items: center;
 }
 
+.delay-row.level-row {
+  grid-template-columns: auto auto 1fr 1.3fr auto;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.delay-row.level-row.dragging {
+  opacity: 0.55;
+}
+
+.delay-row.level-row.drag-over {
+  border-color: color-mix(in srgb, var(--accent, #3dd6c6) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent, #3dd6c6) 10%, transparent);
+}
+
+.level-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: grab;
+  user-select: none;
+  letter-spacing: -2px;
+  line-height: 1;
+}
+
+.level-drag-handle:active {
+  cursor: grabbing;
+}
+
+.level-order {
+  min-width: 1.5rem;
+  text-align: center;
+}
+
 .delay-inputs {
   display: flex;
   flex-wrap: wrap;
