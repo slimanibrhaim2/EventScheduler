@@ -125,7 +125,7 @@ function accountNameTaken(accountNames, accountName) {
   );
 }
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 15;
 
 function accountNameHint(fromFile) {
   return fromFile
@@ -504,14 +504,14 @@ export default function App() {
   const [dataReady, setDataReady] = useState(false);
 
   const loadCore = async () => {
-    const [p, g, pl, s, names] = await Promise.all([
-      api.proxies(),
+    const [proxyPage, g, pl, s, names] = await Promise.all([
+      api.proxies({ limit: 100, offset: 0 }),
       api.games(),
       api.plans(),
       api.settings(),
       api.jobAccountNames(),
     ]);
-    setProxies(p);
+    setProxies(proxyPage.items || (Array.isArray(proxyPage) ? proxyPage : []));
     setGames(g);
     setPlans(pl);
     setSettings(s);
@@ -3441,8 +3441,17 @@ function ScheduledJobsPage({ games, onRefresh, setError, setMessage }) {
                               return;
                             }
                             try {
-                              await api.runNow(job.id);
-                              setMessage(`Resent ${job.name}`);
+                              const updated = await api.runNow(job.id);
+                              if (updated?.status === "done") {
+                                setJobs((prev) =>
+                                  prev.map((row) =>
+                                    row.id === job.id ? { ...row, status: "done" } : row
+                                  )
+                                );
+                                setMessage(`Resent ${job.name} — now ok`);
+                              } else {
+                                setMessage(`Resent ${job.name} — still failed`);
+                              }
                               await reload();
                             } catch (e) {
                               setError(e.message);
@@ -3484,7 +3493,7 @@ function ScheduledJobsPage({ games, onRefresh, setError, setMessage }) {
         </table>
 
         {hasMore && (
-          <div className="actions" style={{ marginTop: 12 }}>
+          <div className="show-more-wrap">
             <button
               type="button"
               className="btn"
@@ -3542,56 +3551,74 @@ function ScheduledJobsPage({ games, onRefresh, setError, setMessage }) {
 function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [gameFilter, setGameFilter] = useState("");
-  const [dateFilter, setDateFilter] = useState("all");
-  const gameFilterRef = useRef("");
+  const [dateFilter, setDateFilter] = useState("today");
+  const accountsLenRef = useRef(0);
+  accountsLenRef.current = accounts.length;
 
   const gameOptions = useMemo(() => gameSelectOptions(games), [games]);
 
-  const loadAccounts = async ({ silent = false, gameId = gameFilterRef.current } = {}) => {
-    if (!silent) setLoading(true);
+  const queryOpts = useMemo(() => {
+    const bounds = dateFilterBounds(dateFilter);
+    return {
+      gameId: gameFilter || undefined,
+      dateFrom: bounds.dateFrom,
+      dateTo: bounds.dateTo,
+    };
+  }, [gameFilter, dateFilter]);
+
+  const loadAccounts = async ({
+    silent = false,
+    append = false,
+    offset = 0,
+    limit = PAGE_SIZE,
+  } = {}) => {
+    if (!silent) {
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+    }
     try {
-      setAccounts(await api.activeAccounts(gameId || undefined));
+      const page = await api.activeAccounts({ ...queryOpts, limit, offset });
+      const items = page.items || (Array.isArray(page) ? page : []);
+      setAccounts((prev) => (append ? [...prev, ...items] : items));
+      setTotal(page.total != null ? page.total : items.length);
+      setHasMore(Boolean(page.has_more));
     } catch (err) {
       setError(err.message);
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
   useEffect(() => {
-    loadAccounts().catch(() => {});
-  }, []);
+    loadAccounts({ offset: 0 }).catch(() => {});
+  }, [queryOpts]);
 
   useEffect(() => {
     const tick = () => {
       if (document.visibilityState === "hidden") return;
-      loadAccounts({ silent: true }).catch(() => {});
+      const keep = Math.max(PAGE_SIZE, accountsLenRef.current || PAGE_SIZE);
+      loadAccounts({ silent: true, offset: 0, limit: keep }).catch(() => {});
     };
     const id = window.setInterval(tick, 5000);
     return () => window.clearInterval(id);
-  }, []);
-
-  const onGameFilter = (next) => {
-    setGameFilter(next);
-    gameFilterRef.current = next;
-    loadAccounts({ gameId: next }).catch(() => {});
-  };
-
-  const filteredAccounts = useMemo(
-    () => accounts.filter((account) => matchesDateFilter(account.added_at, dateFilter)),
-    [accounts, dateFilter]
-  );
+  }, [queryOpts]);
 
   const dayGroups = useMemo(() => {
     const map = new Map();
-    for (const account of filteredAccounts) {
+    for (const account of accounts) {
       const key = localDayKey(account.added_at) || "unknown";
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(account);
     }
     return [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-  }, [filteredAccounts]);
+  }, [accounts]);
 
   const hasFilters = Boolean(gameFilter || (dateFilter && dateFilter !== "all"));
 
@@ -3605,7 +3632,7 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
           </p>
         </div>
         <div className="actions tight">
-          <button type="button" className="btn" onClick={() => loadAccounts()}>
+          <button type="button" className="btn" onClick={() => loadAccounts({ offset: 0 })}>
             Refresh
           </button>
           <Link className="btn" to="/jobs/scheduled">
@@ -3618,7 +3645,7 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
           <SearchableSelect
             label="Game"
             value={gameFilter}
-            onChange={onGameFilter}
+            onChange={setGameFilter}
             options={gameOptions}
             allLabel="All games"
             placeholder="Search games…"
@@ -3626,10 +3653,10 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
           <div>
             <label>Added</label>
             <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
-              <option value="all">All dates</option>
               <option value="today">Today</option>
               <option value="yesterday">Yesterday</option>
               <option value="7d">Last 7 days</option>
+              <option value="all">All dates</option>
             </select>
           </div>
         </div>
@@ -3639,26 +3666,26 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
               type="button"
               className="btn"
               onClick={() => {
-                onGameFilter("");
-                setDateFilter("all");
+                setGameFilter("");
+                setDateFilter("today");
               }}
             >
               Clear filters
             </button>
           </div>
         )}
-        {loading && <p className="sub">Loading…</p>}
-        {!loading && filteredAccounts.length === 0 && (
+        {loading && accounts.length === 0 && <p className="sub">Loading…</p>}
+        {!loading && accounts.length === 0 && (
           <p className="sub">
             {hasFilters
               ? "No active accounts match these filters."
               : "No active accounts — everything finished or nothing scheduled."}
           </p>
         )}
-        {!loading && dayGroups.length > 0 && (
+        {accounts.length > 0 && (
           <div className="active-account-list">
             <p className="sub">
-              {filteredAccounts.length} active account{filteredAccounts.length === 1 ? "" : "s"}
+              Showing {accounts.length} of {total} active account{total === 1 ? "" : "s"}
               {dayGroups.length > 1 ? ` · ${dayGroups.length} days` : ""}
             </p>
             {dayGroups.map(([dayKey, dayAccounts]) => (
@@ -3720,7 +3747,14 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
                               setMessage(
                                 `Deleted ${account.account_name} (${result.deleted_jobs} jobs).`
                               );
-                              await Promise.all([loadAccounts({ silent: true }), onRefresh()]);
+                              await Promise.all([
+                                loadAccounts({
+                                  silent: true,
+                                  offset: 0,
+                                  limit: Math.max(PAGE_SIZE, accountsLenRef.current || PAGE_SIZE),
+                                }),
+                                onRefresh(),
+                              ]);
                             } catch (err) {
                               setError(err.message);
                             }
@@ -3736,6 +3770,20 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
             ))}
           </div>
         )}
+        {hasMore && (
+          <div className="show-more-wrap">
+            <button
+              type="button"
+              className="btn"
+              disabled={loadingMore}
+              onClick={() =>
+                loadAccounts({ append: true, offset: accounts.length }).catch(() => {})
+              }
+            >
+              {loadingMore ? "Loading…" : "Show more"}
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -3744,27 +3792,47 @@ function ActiveAccountsPage({ games, onRefresh, setError, setMessage }) {
 function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const accountsLenRef = useRef(0);
+  accountsLenRef.current = accounts.length;
 
-  const loadAccounts = async ({ silent = false } = {}) => {
-    if (!silent) setLoading(true);
+  const loadAccounts = async ({
+    silent = false,
+    append = false,
+    offset = 0,
+    limit = PAGE_SIZE,
+  } = {}) => {
+    if (!silent) {
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+    }
     try {
-      const list = await api.finishedAccounts();
-      setAccounts(list);
+      const page = await api.finishedAccounts({ limit, offset });
+      const items = page.items || (Array.isArray(page) ? page : []);
+      setAccounts((prev) => (append ? [...prev, ...items] : items));
+      setTotal(page.total != null ? page.total : items.length);
+      setHasMore(Boolean(page.has_more));
     } catch (err) {
       if (!silent) setError(err.message);
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
   useEffect(() => {
-    loadAccounts();
+    loadAccounts({ offset: 0 });
   }, []);
 
   useEffect(() => {
     const tick = () => {
       if (document.visibilityState === "hidden") return;
-      loadAccounts({ silent: true });
+      const keep = Math.max(PAGE_SIZE, accountsLenRef.current || PAGE_SIZE);
+      loadAccounts({ silent: true, offset: 0, limit: keep });
     };
     const id = window.setInterval(tick, 5000);
     return () => window.clearInterval(id);
@@ -3781,17 +3849,17 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
           </p>
         </div>
         <div className="actions tight">
-          <button type="button" className="btn" onClick={() => loadAccounts()}>
+          <button type="button" className="btn" onClick={() => loadAccounts({ offset: 0 })}>
             Refresh
           </button>
-          {accounts.length > 0 && (
+          {total > 0 && (
             <button
               type="button"
               className="btn btn-danger"
               onClick={async () => {
                 if (
                   !(await confirmAction(
-                    `Delete all ${accounts.length} finished account(s)? This removes their jobs, history, request data, and unused account proxies.`,
+                    `Delete all ${total} finished account(s)? This removes their jobs, history, request data, and unused account proxies.`,
                     { title: "Delete all finished", confirmLabel: "Delete all", danger: true }
                   ))
                 ) {
@@ -3804,7 +3872,7 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
                   setMessage(
                     `Deleted ${result.deleted_accounts} finished account(s) (${result.deleted_jobs} jobs${proxyPart}).`
                   );
-                  await Promise.all([loadAccounts(), onRefresh()]);
+                  await Promise.all([loadAccounts({ offset: 0 }), onRefresh()]);
                 } catch (err) {
                   setError(err.message);
                 }
@@ -3816,9 +3884,14 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
         </div>
       </div>
       <div className="panel-body">
-        {loading && <p className="sub">Loading…</p>}
+        {loading && accounts.length === 0 && <p className="sub">Loading…</p>}
         {!loading && accounts.length === 0 && <p className="sub">No finished accounts yet.</p>}
-        {!loading && accounts.length > 0 && (
+        {accounts.length > 0 && (
+          <p className="sub">
+            Showing {accounts.length} of {total}
+          </p>
+        )}
+        {accounts.length > 0 && (
           <table>
             <thead>
               <tr>
@@ -3884,7 +3957,13 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
                               setMessage(
                                 `Removed finished account ${account.account_name} (jobs, history, unused proxies).`
                               );
-                              return Promise.all([loadAccounts(), onRefresh()]);
+                              return Promise.all([
+                                loadAccounts({
+                                  offset: 0,
+                                  limit: Math.max(PAGE_SIZE, accountsLenRef.current || PAGE_SIZE),
+                                }),
+                                onRefresh(),
+                              ]);
                             })
                             .catch((e) => setError(e.message));
                         }}
@@ -3898,12 +3977,26 @@ function FinishedAccountsPage({ onRefresh, setError, setMessage }) {
             </tbody>
           </table>
         )}
+        {hasMore && (
+          <div className="show-more-wrap">
+            <button
+              type="button"
+              className="btn"
+              disabled={loadingMore}
+              onClick={() =>
+                loadAccounts({ append: true, offset: accounts.length }).catch(() => {})
+              }
+            >
+              {loadingMore ? "Loading…" : "Show more"}
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
 }
 
-function ProxiesPage({ proxies, settings, onRefresh, setError, setMessage }) {
+function ProxiesPage({ proxies: proxiesProp, settings, onRefresh, setError, setMessage }) {
   const emptyForm = {
     name: "",
     protocol: "http",
@@ -3913,8 +4006,39 @@ function ProxiesPage({ proxies, settings, onRefresh, setError, setMessage }) {
     password: "",
   };
   const [form, setForm] = useState(emptyForm);
+  const [proxies, setProxies] = useState(proxiesProp || []);
+  const [proxyTotal, setProxyTotal] = useState((proxiesProp || []).length);
+  const [proxyHasMore, setProxyHasMore] = useState(false);
+  const [proxyLoading, setProxyLoading] = useState(false);
+  const [proxyLoadingMore, setProxyLoadingMore] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingFleet, setEditingFleet] = useState(false);
+
+  const loadProxies = async ({ offset = 0, append = false } = {}) => {
+    if (append) setProxyLoadingMore(true);
+    else setProxyLoading(true);
+    try {
+      const page = await api.proxies({ limit: PAGE_SIZE, offset });
+      const items = page.items || (Array.isArray(page) ? page : []);
+      setProxies((prev) => (append ? [...prev, ...items] : items));
+      setProxyTotal(page.total != null ? page.total : items.length);
+      setProxyHasMore(Boolean(page.has_more));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setProxyLoading(false);
+      setProxyLoadingMore(false);
+    }
+  };
+
+  useEffect(() => {
+    loadProxies({ offset: 0 }).catch(() => {});
+  }, []);
+
+  const refreshProxies = async () => {
+    await loadProxies({ offset: 0 });
+    await onRefresh?.();
+  };
   const [fleetCountry, setFleetCountry] = useState("US");
   const [fleetState, setFleetState] = useState("");
   const [fleetCity, setFleetCity] = useState("");
@@ -4026,7 +4150,7 @@ function ProxiesPage({ proxies, settings, onRefresh, setError, setMessage }) {
         setMessage("Proxy saved. Attach it to a job.");
       }
       cancelEdit();
-      await onRefresh();
+      await refreshProxies();
     } catch (err) {
       setError(err.message);
     }
@@ -4202,10 +4326,19 @@ function ProxiesPage({ proxies, settings, onRefresh, setError, setMessage }) {
         <div className="panel-head">
           <div>
             <h2>Saved proxies</h2>
+            {proxyTotal > 0 && (
+              <p className="sub">
+                Showing {proxies.length} of {proxyTotal}
+              </p>
+            )}
           </div>
+          <button type="button" className="btn" onClick={() => loadProxies({ offset: 0 }).catch(() => {})}>
+            Refresh
+          </button>
         </div>
         <div className="panel-body">
-          {proxies.length === 0 && <p className="sub">None yet.</p>}
+          {proxyLoading && proxies.length === 0 && <p className="sub">Loading proxies…</p>}
+          {!proxyLoading && proxies.length === 0 && <p className="sub">None yet.</p>}
           <table>
             <thead>
               <tr>
@@ -4245,7 +4378,7 @@ function ProxiesPage({ proxies, settings, onRefresh, setError, setMessage }) {
                             .deleteProxy(p.id)
                             .then(() => {
                               if (editingId === p.id) cancelEdit();
-                              return onRefresh();
+                              return refreshProxies();
                             })
                             .catch((e) => setError(e.message));
                         }}
@@ -4258,6 +4391,18 @@ function ProxiesPage({ proxies, settings, onRefresh, setError, setMessage }) {
               ))}
             </tbody>
           </table>
+          {proxyHasMore && (
+            <div className="show-more-wrap">
+              <button
+                type="button"
+                className="btn"
+                disabled={proxyLoadingMore}
+                onClick={() => loadProxies({ offset: proxies.length, append: true }).catch(() => {})}
+              >
+                {proxyLoadingMore ? "Loading…" : "Show more"}
+              </button>
+            </div>
+          )}
         </div>
       </section>
     </div>
@@ -4361,9 +4506,21 @@ function HistoryPage({ games }) {
     setMessage("");
     setResendingId(run.id);
     try {
-      await api.runNow(run.job_id);
-      setMessage(`Resent ${run.job_name || "request"}`);
-      await loadRuns();
+      const updated = await api.runNow(run.job_id, { from_run_id: run.id });
+      if (updated?.status === "done") {
+        setRuns((prev) =>
+          prev.map((row) =>
+            row.id === run.id
+              ? { ...row, ok: true, error: null, status_code: row.status_code || 200 }
+              : row
+          )
+        );
+        setMessage(`Resent ${run.job_name || "request"} — now ok`);
+      } else {
+        setMessage(`Resent ${run.job_name || "request"} — still failed`);
+      }
+      const keep = Math.max(PAGE_SIZE, runsLenRef.current || PAGE_SIZE);
+      await loadRuns({ silent: true, offset: 0, limit: keep });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -4627,7 +4784,7 @@ function HistoryPage({ games }) {
         </table>
 
         {hasMore && (
-          <div className="actions" style={{ marginTop: 12 }}>
+          <div className="show-more-wrap">
             <button
               type="button"
               className="btn"

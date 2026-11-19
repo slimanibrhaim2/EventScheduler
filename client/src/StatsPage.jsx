@@ -2,6 +2,33 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { useAuth } from "./auth";
 
+function startOfLocalDay(date = new Date()) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function dateFilterBounds(filter) {
+  if (!filter || filter === "all") return {};
+  const today = startOfLocalDay();
+  if (filter === "today") {
+    const end = new Date(today);
+    end.setDate(end.getDate() + 1);
+    return { dateFrom: today.toISOString(), dateTo: end.toISOString() };
+  }
+  if (filter === "yesterday") {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 1);
+    return { dateFrom: start.toISOString(), dateTo: today.toISOString() };
+  }
+  if (filter === "7d") {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 6);
+    return { dateFrom: start.toISOString() };
+  }
+  return {};
+}
+
 function formatDay(day) {
   if (!day) return "—";
   const date = new Date(`${day}T12:00:00`);
@@ -13,15 +40,24 @@ function formatDay(day) {
   });
 }
 
+function periodLabel(filter) {
+  if (filter === "today") return "Today";
+  if (filter === "yesterday") return "Yesterday";
+  if (filter === "7d") return "Last 7 days";
+  return "All time";
+}
+
 export default function StatsPage({ setError }) {
   const { isOwner } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [dateFilter, setDateFilter] = useState("today");
 
   const load = async () => {
     setLoading(true);
     try {
-      setData(await api.ownerStats());
+      const bounds = dateFilterBounds(dateFilter);
+      setData(await api.ownerStats(bounds));
       setError("");
     } catch (err) {
       setError(err.message);
@@ -33,7 +69,7 @@ export default function StatsPage({ setError }) {
   useEffect(() => {
     if (!isOwner) return;
     load().catch(() => {});
-  }, [isOwner]);
+  }, [isOwner, dateFilter]);
 
   const maxDay = useMemo(() => {
     const rows = data?.accounts_by_day || [];
@@ -51,17 +87,30 @@ export default function StatsPage({ setError }) {
   }
 
   const summary = data?.summary || {};
+  const label = periodLabel(dateFilter);
 
   return (
     <section className="panel settings-wide">
       <div className="panel-head">
         <div>
           <h2>Statistics</h2>
-          <p className="sub">Owner overview of accounts added across all users.</p>
+          <p className="sub">Owner overview — filter by period for ok / failed runs and accounts added.</p>
         </div>
-        <button type="button" className="btn" onClick={() => load()}>
-          Refresh
-        </button>
+        <div className="actions tight">
+          <select
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value)}
+            aria-label="Stats period"
+          >
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="7d">Last 7 days</option>
+            <option value="all">All time</option>
+          </select>
+          <button type="button" className="btn" onClick={() => load()}>
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="panel-body stats-page">
@@ -69,14 +118,53 @@ export default function StatsPage({ setError }) {
 
         {!loading && (
           <>
+            <p className="sub stats-period-label">Showing: {label}</p>
+
             <div className="stats-summary">
               <div className="stats-metric">
-                <div className="sub">Accounts today</div>
-                <strong>{summary.accounts_today ?? 0}</strong>
+                <div className="sub">Accounts added</div>
+                <strong>{summary.accounts_in_period ?? summary.accounts_today ?? 0}</strong>
               </div>
               <div className="stats-metric">
-                <div className="sub">Accounts total</div>
-                <strong>{summary.accounts_total ?? 0}</strong>
+                <div className="sub">Runs ok</div>
+                <strong className="stats-ok">{summary.runs_ok ?? 0}</strong>
+              </div>
+              <div className="stats-metric">
+                <div className="sub">Runs failed</div>
+                <strong className="stats-failed">{summary.runs_failed ?? 0}</strong>
+              </div>
+              <div className="stats-metric">
+                <div className="sub">Success rate</div>
+                <strong>
+                  {summary.success_rate != null ? `${summary.success_rate}%` : "—"}
+                </strong>
+              </div>
+            </div>
+
+            <div className="stats-summary">
+              <div className="stats-metric">
+                <div className="sub">Sessions ok / failed</div>
+                <strong>
+                  {summary.sessions_ok ?? 0}
+                  <span className="sub stats-inline"> / {summary.sessions_failed ?? 0}</span>
+                </strong>
+              </div>
+              <div className="stats-metric">
+                <div className="sub">Events ok / failed</div>
+                <strong>
+                  {summary.events_ok ?? 0}
+                  <span className="sub stats-inline"> / {summary.events_failed ?? 0}</span>
+                </strong>
+              </div>
+              <div className="stats-metric">
+                <div className="sub">Active now</div>
+                <strong>
+                  {summary.active_accounts ?? 0}
+                  <span className="sub stats-inline">
+                    {" "}
+                    accounts · {summary.active_jobs ?? 0} jobs
+                  </span>
+                </strong>
               </div>
               <div className="stats-metric">
                 <div className="sub">Users</div>
@@ -88,8 +176,15 @@ export default function StatsPage({ setError }) {
                   </span>
                 </strong>
               </div>
+            </div>
+
+            <div className="stats-summary">
               <div className="stats-metric">
-                <div className="sub">Jobs</div>
+                <div className="sub">Accounts total (all time)</div>
+                <strong>{summary.accounts_total ?? 0}</strong>
+              </div>
+              <div className="stats-metric">
+                <div className="sub">Jobs (all time)</div>
                 <strong>
                   {summary.jobs_total ?? 0}
                   <span className="sub stats-inline">
@@ -99,11 +194,19 @@ export default function StatsPage({ setError }) {
                   </span>
                 </strong>
               </div>
+              <div className="stats-metric">
+                <div className="sub">Runs in period</div>
+                <strong>{summary.runs_total ?? 0}</strong>
+              </div>
             </div>
 
             <div className="stats-block">
               <h3 className="settings-section-title">Accounts added per day</h3>
-              <p className="sub">Last 30 days · each batch/account counted once on the day it was created.</p>
+              <p className="sub">
+                {dateFilter === "all"
+                  ? "Last 30 days · each batch/account counted once on the day it was created."
+                  : `${label} · each batch/account counted once on the day it was created.`}
+              </p>
               {(data?.accounts_by_day || []).length === 0 ? (
                 <p className="sub">No accounts in this period.</p>
               ) : (
@@ -127,6 +230,7 @@ export default function StatsPage({ setError }) {
 
             <div className="stats-block">
               <h3 className="settings-section-title">Per user</h3>
+              <p className="sub">Accounts added and run results for {label.toLowerCase()}.</p>
               {(data?.users || []).length === 0 ? (
                 <p className="sub">No users yet.</p>
               ) : (
@@ -142,20 +246,20 @@ export default function StatsPage({ setError }) {
                       </div>
                       <div className="stats-user-metrics">
                         <div>
-                          <div className="sub">Today</div>
-                          <strong>{user.accounts_today}</strong>
-                        </div>
-                        <div>
-                          <div className="sub">7 days</div>
-                          <strong>{user.accounts_7d}</strong>
-                        </div>
-                        <div>
                           <div className="sub">Accounts</div>
-                          <strong>{user.accounts_total}</strong>
+                          <strong>{user.accounts_in_period ?? 0}</strong>
                         </div>
                         <div>
-                          <div className="sub">Jobs</div>
-                          <strong>{user.jobs_total}</strong>
+                          <div className="sub">Ok</div>
+                          <strong className="stats-ok">{user.runs_ok ?? 0}</strong>
+                        </div>
+                        <div>
+                          <div className="sub">Failed</div>
+                          <strong className="stats-failed">{user.runs_failed ?? 0}</strong>
+                        </div>
+                        <div>
+                          <div className="sub">Jobs total</div>
+                          <strong>{user.jobs_total ?? 0}</strong>
                         </div>
                       </div>
                     </article>

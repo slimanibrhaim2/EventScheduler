@@ -4,12 +4,34 @@ const { buildFleetProxyConfig, testProxyConnection } = require("../fleetProxy");
 
 const router = express.Router();
 
+function clampPage(value, fallback, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(0, Math.floor(n)));
+}
+
 router.get("/", async (req, res) => {
-  const result = await query(
-    `SELECT * FROM proxies WHERE user_id = $1 ORDER BY created_at DESC`,
+  const limit = clampPage(req.query.limit, 15, 100) || 15;
+  const offset = clampPage(req.query.offset, 0, 1_000_000);
+  const countResult = await query(
+    `SELECT COUNT(*)::int AS total FROM proxies WHERE user_id = $1`,
     [req.appUser.id]
   );
-  res.json(result.rows);
+  const total = countResult.rows[0]?.total || 0;
+  const result = await query(
+    `SELECT * FROM proxies
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [req.appUser.id, limit, offset]
+  );
+  res.json({
+    items: result.rows,
+    total,
+    limit,
+    offset,
+    has_more: offset + result.rows.length < total,
+  });
 });
 
 router.post("/test", async (req, res) => {

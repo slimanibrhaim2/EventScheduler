@@ -22,7 +22,7 @@ function resolveDateBounds(query) {
 router.get("/", async (req, res) => {
   const params = [req.appUser.id];
   const where = ["j.user_id = $1"];
-  const limit = clampPage(req.query.limit, 50, 100) || 50;
+  const limit = clampPage(req.query.limit, 15, 100) || 15;
   const offset = clampPage(req.query.offset, 0, 1_000_000);
 
   if (req.query.game_id) {

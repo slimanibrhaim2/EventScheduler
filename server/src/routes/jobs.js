@@ -142,7 +142,7 @@ router.get("/account-names", async (req, res) => {
 
 router.get("/", async (req, res) => {
   // Paginated light list — no full response bodies. Use ?limit=&offset= + filters.
-  const limit = clampPage(req.query.limit, 50, 100) || 50;
+  const limit = clampPage(req.query.limit, 15, 100) || 15;
   const offset = clampPage(req.query.offset, 0, 1_000_000);
   const view = String(req.query.view || "");
   const params = [req.appUser.id];
@@ -644,12 +644,49 @@ router.post("/from-plan", async (req, res) => {
 });
 
 router.get("/accounts/active", async (req, res) => {
+  const limit = clampPage(req.query.limit, 15, 100) || 15;
+  const offset = clampPage(req.query.offset, 0, 1_000_000);
   const params = [req.appUser.id];
-  let gameFilter = "";
+  const where = [
+    `j.user_id = $1`,
+    `j.status IN ('pending', 'running')`,
+    `SPLIT_PART(j.name, ' · ', 1) <> ''`,
+  ];
+
   if (req.query.game_id) {
     params.push(req.query.game_id);
-    gameFilter = ` AND j.game_id = $2`;
+    where.push(`j.game_id = $${params.length}`);
   }
+
+  const bounds = resolveDateBounds(req.query);
+  // Date filter applies to when the account was first added (MIN created_at).
+  const having = [];
+  if (bounds?.start) {
+    params.push(bounds.start.toISOString());
+    having.push(`MIN(j.created_at) >= $${params.length}::timestamptz`);
+  }
+  if (bounds?.end) {
+    params.push(bounds.end.toISOString());
+    having.push(`MIN(j.created_at) < $${params.length}::timestamptz`);
+  }
+
+  const whereSql = where.join(" AND ");
+  const havingSql = having.length ? `HAVING ${having.join(" AND ")}` : "";
+
+  const countResult = await query(
+    `SELECT COUNT(*)::int AS total FROM (
+       SELECT 1
+       FROM jobs j
+       WHERE ${whereSql}
+       GROUP BY LOWER(SPLIT_PART(j.name, ' · ', 1)), j.game_id
+       ${havingSql}
+     ) t`,
+    params
+  );
+  const total = countResult.rows[0]?.total || 0;
+
+  const limitParam = params.length + 1;
+  const offsetParam = params.length + 2;
   const result = await query(
     `SELECT
        SPLIT_PART(MIN(j.name), ' · ', 1) AS account_name,
@@ -658,18 +695,42 @@ router.get("/accounts/active", async (req, res) => {
        MIN(j.created_at) AS added_at
      FROM jobs j
      LEFT JOIN games g ON g.id = j.game_id
-     WHERE j.user_id = $1
-       AND j.status IN ('pending', 'running')
-       AND SPLIT_PART(j.name, ' · ', 1) <> ''
-       ${gameFilter}
+     WHERE ${whereSql}
      GROUP BY LOWER(SPLIT_PART(j.name, ' · ', 1)), j.game_id
-     ORDER BY MIN(j.created_at) DESC, account_name`,
-    params
+     ${havingSql}
+     ORDER BY MIN(j.created_at) DESC, account_name
+     LIMIT $${limitParam} OFFSET $${offsetParam}`,
+    [...params, limit, offset]
   );
-  res.json(result.rows);
+
+  res.json({
+    items: result.rows,
+    total,
+    limit,
+    offset,
+    has_more: offset + result.rows.length < total,
+  });
 });
 
 router.get("/accounts/finished", async (req, res) => {
+  const limit = clampPage(req.query.limit, 15, 100) || 15;
+  const offset = clampPage(req.query.offset, 0, 1_000_000);
+  const params = [req.appUser.id];
+  const whereSql = `j.batch_id IS NOT NULL AND j.user_id = $1`;
+  const havingSql = `COUNT(*) FILTER (WHERE j.status NOT IN ('done', 'failed')) = 0`;
+
+  const countResult = await query(
+    `SELECT COUNT(*)::int AS total FROM (
+       SELECT j.batch_id
+       FROM jobs j
+       WHERE ${whereSql}
+       GROUP BY j.batch_id
+       HAVING ${havingSql}
+     ) t`,
+    params
+  );
+  const total = countResult.rows[0]?.total || 0;
+
   const result = await query(
     `SELECT
        j.batch_id,
@@ -687,14 +748,21 @@ router.get("/accounts/finished", async (req, res) => {
      FROM jobs j
      LEFT JOIN games g ON g.id = j.game_id
      LEFT JOIN plans pl ON pl.id = j.plan_id
-     WHERE j.batch_id IS NOT NULL
-       AND j.user_id = $1
+     WHERE ${whereSql}
      GROUP BY j.batch_id
-     HAVING COUNT(*) FILTER (WHERE j.status NOT IN ('done', 'failed')) = 0
-     ORDER BY MAX(j.updated_at) DESC`,
-    [req.appUser.id]
+     HAVING ${havingSql}
+     ORDER BY MAX(j.updated_at) DESC
+     LIMIT $2 OFFSET $3`,
+    [req.appUser.id, limit, offset]
   );
-  res.json(result.rows);
+
+  res.json({
+    items: result.rows,
+    total,
+    limit,
+    offset,
+    has_more: offset + result.rows.length < total,
+  });
 });
 
 router.delete("/accounts/finished", async (req, res) => {
@@ -781,7 +849,42 @@ router.post("/:id/run-now", async (req, res) => {
     `SELECT * FROM jobs WHERE id = $1 AND user_id = $2`,
     [req.params.id, req.appUser.id]
   );
-  res.json(updated.rows[0]);
+  const row = updated.rows[0];
+
+  // If this resend recovered a failed history row, flip that run to ok so UI matches.
+  const fromRunId = Number(req.body?.from_run_id);
+  if (row?.status === "done" && Number.isFinite(fromRunId) && fromRunId > 0) {
+    const latest = await query(
+      `SELECT status_code, response_preview, response_body, response_headers
+       FROM job_runs
+       WHERE job_id = $1
+       ORDER BY started_at DESC
+       LIMIT 1`,
+      [job.id]
+    );
+    const tip = latest.rows[0];
+    await query(
+      `UPDATE job_runs
+       SET ok = TRUE,
+           error = NULL,
+           status_code = COALESCE($3, status_code),
+           response_preview = COALESCE($4, response_preview),
+           response_body = COALESCE($5, response_body),
+           response_headers = COALESCE($6::jsonb, response_headers),
+           finished_at = NOW()
+       WHERE id = $1 AND job_id = $2`,
+      [
+        fromRunId,
+        job.id,
+        tip?.status_code ?? null,
+        tip?.response_preview ?? null,
+        tip?.response_body ?? null,
+        tip?.response_headers ? JSON.stringify(tip.response_headers) : null,
+      ]
+    );
+  }
+
+  res.json(row);
 });
 
 router.delete("/:id", async (req, res) => {

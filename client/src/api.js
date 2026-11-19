@@ -70,11 +70,29 @@ export const api = {
   createJobsFromPlan: (body) =>
     request("/api/jobs/from-plan", { method: "POST", body: JSON.stringify(body) }),
   parseHttp: (raw) => request("/api/jobs/parse", { method: "POST", body: JSON.stringify({ raw }) }),
-  runNow: (id) => request(`/api/jobs/${id}/run-now`, { method: "POST" }),
+  runNow: (id, body = {}) =>
+    request(`/api/jobs/${id}/run-now`, { method: "POST", body: JSON.stringify(body || {}) }),
   deleteJob: (id) => request(`/api/jobs/${id}`, { method: "DELETE" }),
-  finishedAccounts: () => request("/api/jobs/accounts/finished"),
-  activeAccounts: (gameId) =>
-    request(gameId ? `/api/jobs/accounts/active?game_id=${gameId}` : "/api/jobs/accounts/active"),
+  finishedAccounts: (opts = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return request(`/api/jobs/accounts/finished${qs ? `?${qs}` : ""}`);
+  },
+  activeAccounts: (opts = {}) => {
+    const params = new URLSearchParams();
+    const gameId = typeof opts === "string" || typeof opts === "number" ? opts : opts.gameId;
+    if (gameId) params.set("game_id", String(gameId));
+    if (opts && typeof opts === "object") {
+      if (opts.limit != null) params.set("limit", String(opts.limit));
+      if (opts.offset != null) params.set("offset", String(opts.offset));
+      if (opts.dateFrom) params.set("date_from", opts.dateFrom);
+      if (opts.dateTo) params.set("date_to", opts.dateTo);
+    }
+    const qs = params.toString();
+    return request(`/api/jobs/accounts/active${qs ? `?${qs}` : ""}`);
+  },
   deleteBatch: (batchId) => request(`/api/jobs/batches/${batchId}`, { method: "DELETE" }),
   deleteAccountByName: (accountName) =>
     request("/api/jobs/accounts/delete", {
@@ -82,7 +100,13 @@ export const api = {
       body: JSON.stringify({ account_name: accountName }),
     }),
   deleteAllFinished: () => request("/api/jobs/accounts/finished", { method: "DELETE" }),
-  proxies: () => request("/api/proxies"),
+  proxies: (opts = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return request(`/api/proxies${qs ? `?${qs}` : ""}`);
+  },
   createProxy: (body) => request("/api/proxies", { method: "POST", body: JSON.stringify(body) }),
   updateProxy: (id, body) => request(`/api/proxies/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   testProxy: (body) => request("/api/proxies/test", { method: "POST", body: JSON.stringify(body) }),
@@ -118,5 +142,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  ownerStats: () => request("/api/stats"),
+  ownerStats: (opts = {}) => {
+    const params = new URLSearchParams();
+    if (opts.dateFrom) params.set("date_from", opts.dateFrom);
+    if (opts.dateTo) params.set("date_to", opts.dateTo);
+    const qs = params.toString();
+    return request(`/api/stats${qs ? `?${qs}` : ""}`);
+  },
 };

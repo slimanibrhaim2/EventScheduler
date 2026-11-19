@@ -1000,6 +1000,17 @@ code {
   margin-bottom: 14px;
 }
 
+.show-more-wrap {
+  margin-top: 12px;
+  width: 100%;
+}
+
+.show-more-wrap .btn {
+  width: 100%;
+  justify-content: center;
+  text-align: center;
+}
+
 .search-select {
   position: relative;
 }
@@ -1906,6 +1917,26 @@ code {
 .stats-inline {
   font-size: 0.8rem;
   font-weight: 400;
+}
+
+.stats-period-label {
+  margin: 0 0 10px;
+}
+
+.stats-ok {
+  color: color-mix(in srgb, #3dd68c 85%, white);
+}
+
+.stats-failed {
+  color: color-mix(in srgb, #ff6b6b 85%, white);
+}
+
+html[data-theme="light"] .stats-ok {
+  color: #1a7f4b;
+}
+
+html[data-theme="light"] .stats-failed {
+  color: #c62828;
 }
 
 .stats-block {
