@@ -117,11 +117,15 @@ function batchNameFromFile(fileName) {
   return String(fileName || "").replace(/\.[^.]+$/, "").trim();
 }
 
-function accountNameTaken(jobs, accountName) {
+function accountNameTaken(accountNames, accountName) {
   const wanted = String(accountName || "").trim().toLowerCase();
   if (!wanted) return false;
-  return jobs.some((job) => String(job.name || "").split(" · ")[0].trim().toLowerCase() === wanted);
+  return (accountNames || []).some(
+    (name) => String(name || "").trim().toLowerCase() === wanted
+  );
 }
+
+const PAGE_SIZE = 50;
 
 function accountNameHint(fromFile) {
   return fromFile
@@ -215,6 +219,28 @@ function matchesDateFilter(value, filter) {
     return point >= start.getTime();
   }
   return true;
+}
+
+/** Browser-local day bounds as ISO strings for server filtering (avoids server TZ mismatch). */
+function dateFilterBounds(filter) {
+  if (!filter || filter === "all") return {};
+  const today = startOfLocalDay();
+  if (filter === "today") {
+    const end = new Date(today);
+    end.setDate(end.getDate() + 1);
+    return { dateFrom: today.toISOString(), dateTo: end.toISOString() };
+  }
+  if (filter === "yesterday") {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 1);
+    return { dateFrom: start.toISOString(), dateTo: today.toISOString() };
+  }
+  if (filter === "7d") {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 6);
+    return { dateFrom: start.toISOString() };
+  }
+  return {};
 }
 
 function formatDelay({ delay_days = 0, delay_hours = 0, delay_minutes = 0 }) {
@@ -454,7 +480,7 @@ export default function App() {
     error: authError,
   } = useAuth();
   const location = useLocation();
-  const [jobs, setJobs] = useState([]);
+  const [accountNames, setAccountNames] = useState([]);
   const [proxies, setProxies] = useState([]);
   const [games, setGames] = useState([]);
   const [plans, setPlans] = useState([]);
@@ -474,25 +500,27 @@ export default function App() {
   const [theme, setTheme] = useState(() => getPreferredTheme());
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  /** False until the first games/plans/settings fetch finishes — avoids "No games yet" flash. */
+  const [dataReady, setDataReady] = useState(false);
 
-  const load = async () => {
-    const [j, p, g, pl, s] = await Promise.all([
-      api.jobs(),
+  const loadCore = async () => {
+    const [p, g, pl, s, names] = await Promise.all([
       api.proxies(),
       api.games(),
       api.plans(),
       api.settings(),
+      api.jobAccountNames(),
     ]);
-    setJobs(j);
     setProxies(p);
     setGames(g);
     setPlans(pl);
     setSettings(s);
+    setAccountNames(names);
   };
 
-  // Live status only — do not reload games/plans/settings (that wipes open edit forms).
-  const refreshJobs = async () => {
-    setJobs(await api.jobs());
+  const load = async () => {
+    await loadCore();
+    setDataReady(true);
   };
 
   useEffect(() => {
@@ -501,8 +529,21 @@ export default function App() {
 
   useEffect(() => {
     if (!isApproved) return undefined;
-    load().catch((err) => setError(err.message));
-    return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        await loadCore();
+        if (!cancelled) setDataReady(true);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message);
+          setDataReady(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [isApproved]);
 
   const toggleTheme = (event) => {
@@ -519,17 +560,6 @@ export default function App() {
       swap();
     }
   };
-
-  // Keep jobs/status fresh without resetting game/plan/settings editors.
-  useEffect(() => {
-    if (!isApproved) return undefined;
-    const tick = () => {
-      if (document.visibilityState === "hidden") return;
-      refreshJobs().catch(() => {});
-    };
-    const id = window.setInterval(tick, 5000);
-    return () => window.clearInterval(id);
-  }, [isApproved]);
 
   useEffect(() => {
     setError("");
@@ -651,6 +681,7 @@ export default function App() {
                 games={games}
                 plans={plans}
                 settings={settings}
+                dataReady={dataReady}
                 onRefresh={load}
                 {...flash}
               />
@@ -680,7 +711,7 @@ export default function App() {
             path="/jobs"
             element={
               <JobsPage
-                jobs={jobs}
+                accountNames={accountNames}
                 proxies={proxies}
                 games={games}
                 plans={plans}
@@ -692,7 +723,7 @@ export default function App() {
           />
           <Route
             path="/jobs/scheduled"
-            element={<ScheduledJobsPage jobs={jobs} games={games} onRefresh={load} {...flash} />}
+            element={<ScheduledJobsPage games={games} onRefresh={load} {...flash} />}
           />
           <Route
             path="/jobs/active"
@@ -723,7 +754,7 @@ export default function App() {
   );
 }
 
-function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) {
+function GamesPage({ games, plans, settings, dataReady = true, onRefresh, setError, setMessage }) {
   const { isAdmin } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1342,7 +1373,8 @@ function GamesPage({ games, plans, settings, onRefresh, setError, setMessage }) 
       </div>
 
       <div className="panel-body">
-        {games.length === 0 && (
+        {!dataReady && <p className="sub">Loading games…</p>}
+        {dataReady && games.length === 0 && (
           <div className="empty">
             <p>No games yet.</p>
             {isAdmin ? (
@@ -2235,7 +2267,7 @@ function InlinePlanCreator({ game, settings, onCancel, onCreated, setError, setM
   );
 }
 
-function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, setMessage }) {
+function JobsPage({ accountNames, proxies, games, plans, settings, onRefresh, setError, setMessage }) {
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [gameId, setGameId] = useState("");
@@ -2299,7 +2331,7 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
       setNameError("");
       return true;
     }
-    if (accountNameTaken(jobs, trimmed)) {
+    if (accountNameTaken(accountNames, trimmed)) {
       const hint = accountNameHint(fromDroppedFile);
       setNameError(hint);
       setError(hint);
@@ -2318,7 +2350,7 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
     setFileName(file.name);
     setName(batch);
     setRequestExpanded(false);
-    if (accountNameTaken(jobs, batch)) {
+    if (accountNameTaken(accountNames, batch)) {
       const hint = accountNameHint(true);
       setNameError(hint);
       setError(hint);
@@ -2478,7 +2510,7 @@ function JobsPage({ jobs, proxies, games, plans, settings, onRefresh, setError, 
 
   const fromFile = Boolean(fileName);
   const requestReady = Boolean(raw.trim());
-  const nameTaken = accountNameTaken(jobs, name);
+  const nameTaken = accountNameTaken(accountNames, name);
 
   return (
     <form className="panel" onSubmit={save}>
@@ -3040,7 +3072,7 @@ function SearchableSelect({ label, value, onChange, options, allLabel, placehold
   );
 }
 
-function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
+function ScheduledJobsPage({ games, onRefresh, setError, setMessage }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromUrl = searchParams.get("account") || "";
   const [showFull, setShowFull] = useState(Boolean(accountFromUrl));
@@ -3049,6 +3081,61 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
   const [statusFilter, setStatusFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
   const [dateFilter, setDateFilter] = useState("all");
+  const [jobs, setJobs] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [accountNames, setAccountNames] = useState([]);
+
+  const queryOpts = useMemo(() => {
+    const bounds = dateFilterBounds(dateFilter);
+    return {
+      view: showFull ? undefined : "next",
+      gameId: gameFilter || undefined,
+      account: accountFilter || undefined,
+      status: statusFilter || "remaining",
+      kind: kindFilter || undefined,
+      dateFrom: bounds.dateFrom,
+      dateTo: bounds.dateTo,
+    };
+  }, [showFull, gameFilter, accountFilter, statusFilter, kindFilter, dateFilter]);
+
+  const jobsLenRef = useRef(0);
+  jobsLenRef.current = jobs.length;
+
+  const loadPage = async ({
+    offset = 0,
+    append = false,
+    silent = false,
+    limit = PAGE_SIZE,
+  } = {}) => {
+    if (!silent) {
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+    }
+    try {
+      const page = await api.jobs({ ...queryOpts, limit, offset });
+      setJobs((prev) => (append ? [...prev, ...(page.items || [])] : page.items || []));
+      setTotal(page.total || 0);
+      setHasMore(Boolean(page.has_more));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      if (!silent) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  };
+
+  const reload = async () => {
+    await Promise.all([
+      loadPage({ offset: 0, append: false }),
+      api.jobAccountNames().then(setAccountNames).catch(() => {}),
+      onRefresh?.(),
+    ]);
+  };
 
   useEffect(() => {
     const next = searchParams.get("account") || "";
@@ -3057,29 +3144,33 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
     setShowFull(true);
   }, [searchParams]);
 
-  const accountOptions = useMemo(() => {
-    const names = new Set(jobs.map(jobAccountName).filter(Boolean));
-    return [...names]
-      .sort((a, b) => a.localeCompare(b))
-      .map((name) => ({ value: name, label: name }));
-  }, [jobs]);
+  useEffect(() => {
+    loadPage({ offset: 0 }).catch(() => {});
+  }, [queryOpts]);
 
-  const gameOptions = useMemo(() => {
-    const fromJobs = new Map();
-    for (const job of jobs) {
-      if (job.game_id && job.game_name) fromJobs.set(String(job.game_id), job.game_name);
-    }
-    const photoById = new Map(
-      (games || []).map((game) => [String(game.id), game.photo_url || ""])
-    );
-    return [...fromJobs.entries()]
-      .map(([id, name]) => ({
-        value: id,
-        label: name,
-        photo: photoById.get(id) || "",
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [jobs, games]);
+  useEffect(() => {
+    api.jobAccountNames().then(setAccountNames).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      const keep = Math.max(PAGE_SIZE, jobsLenRef.current || PAGE_SIZE);
+      loadPage({ offset: 0, silent: true, limit: keep }).catch(() => {});
+    };
+    const id = window.setInterval(tick, 5000);
+    return () => window.clearInterval(id);
+  }, [queryOpts]);
+
+  const accountOptions = useMemo(
+    () =>
+      accountNames
+        .map((name) => ({ value: name, label: name }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [accountNames]
+  );
+
+  const gameOptions = useMemo(() => gameSelectOptions(games), [games]);
 
   const hasFilters = Boolean(
     accountFilter || gameFilter || statusFilter || kindFilter || (dateFilter && dateFilter !== "all")
@@ -3102,60 +3193,9 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
     setShowFull(true);
   };
 
-  const filteredJobs = useMemo(() => {
-    return jobs.filter((job) => {
-      if (accountFilter && jobAccountName(job) !== accountFilter) return false;
-      if (gameFilter && String(job.game_id || "") !== gameFilter) return false;
-      if (statusFilter && statusFilter !== "all" && job.status !== statusFilter) return false;
-      if (kindFilter && jobKind(job) !== kindFilter) return false;
-      if (!matchesDateFilter(job.run_at, dateFilter)) return false;
-      return true;
-    });
-  }, [jobs, accountFilter, gameFilter, statusFilter, kindFilter, dateFilter]);
-
-  const displayedJobs = useMemo(() => {
-    if (showFull) {
-      // Default: remaining only. "all" or a specific status uses the filtered set as-is.
-      const list = filteredJobs.filter((job) => {
-        if (statusFilter === "all") return true;
-        if (statusFilter) return true;
-        return job.status === "pending" || job.status === "running";
-      });
-      return list.sort((a, b) => new Date(a.run_at) - new Date(b.run_at));
-    }
-
-    // Next upcoming job per account (pending/running only).
-    const byAccount = new Map();
-    for (const job of filteredJobs) {
-      if (job.status === "done" || job.status === "failed") continue;
-      const key = job.batch_id || jobAccountName(job);
-      const current = byAccount.get(key);
-      if (!current || new Date(job.run_at) < new Date(current.run_at)) {
-        byAccount.set(key, job);
-      }
-    }
-    return [...byAccount.values()].sort((a, b) => new Date(a.run_at) - new Date(b.run_at));
-  }, [filteredJobs, showFull, statusFilter]);
-
-  const remainingByAccount = useMemo(() => {
-    const counts = new Map();
-    for (const job of filteredJobs) {
-      if (job.status === "done" || job.status === "failed") continue;
-      const key = job.batch_id || jobAccountName(job);
-      counts.set(key, (counts.get(key) || 0) + 1);
-    }
-    return counts;
-  }, [filteredJobs]);
-
   const accountDetails = useMemo(() => {
-    if (!showFull || !accountFilter) return null;
-    const accountJobs = jobs.filter((job) => jobAccountName(job) === accountFilter);
-    if (accountJobs.length === 0) return null;
-    const earliest = accountJobs.reduce((best, job) => {
-      if (!best) return job;
-      return new Date(job.created_at) < new Date(best.created_at) ? job : best;
-    }, null);
-    const sample = earliest || accountJobs[0];
+    if (!showFull || !accountFilter || jobs.length === 0) return null;
+    const sample = jobs[0];
     return {
       account: accountFilter,
       batchId: sample.batch_id || null,
@@ -3163,16 +3203,16 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
       plan: sample.plan_name || "manual",
       proxy: sample.proxy_name || "direct",
       addedAt: sample.created_at,
-      remaining: accountJobs.filter((j) => j.status === "pending" || j.status === "running").length,
-      total: accountJobs.length,
+      remaining: total,
+      total,
     };
-  }, [showFull, accountFilter, jobs]);
+  }, [showFull, accountFilter, jobs, total]);
 
   const deleteWholeAccount = async () => {
     if (!accountDetails?.account) return;
     if (
       !(await confirmAction(
-        `Delete account "${accountDetails.account}" and all ${accountDetails.total} job(s)? This removes sessions, events, history, and unused proxies.`,
+        `Delete account "${accountDetails.account}" and all its jobs? This removes sessions, events, history, and unused proxies.`,
         {
           title: "Delete account",
           confirmLabel: "Delete account",
@@ -3191,7 +3231,7 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
           result.deleted_proxies ? `, ${result.deleted_proxies} proxies` : ""
         }).`
       );
-      await onRefresh();
+      await reload();
     } catch (err) {
       setError(err.message);
     }
@@ -3204,28 +3244,36 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
           <h2>Scheduled jobs</h2>
           <p className="sub">
             {showFull
-              ? "Remaining schedule only (old finished jobs hidden unless you filter status). Auto-refreshes every 5s."
-              : "Next job per account. Auto-refreshes every 5s."}
+              ? "Remaining schedule (paginated). Auto-refreshes every 5s."
+              : "Next job per account (paginated). Auto-refreshes every 5s."}
           </p>
         </div>
         <div className="actions tight">
-          <button type="button" className="btn" onClick={() => onRefresh().catch((e) => setError(e.message))}>
+          <button type="button" className="btn" onClick={() => reload().catch((e) => setError(e.message))}>
             Refresh
           </button>
           <button
             type="button"
             className="btn btn-info"
-            onClick={() => {
-              exportUnfinishedEventsExcel(
-                jobs,
-                `unfinished-accounts-${new Date().toISOString().slice(0, 10)}.xlsx`
-              )
-                .then(() =>
-                  setMessage(
-                    "Excel exported: yellow = done, red = failed, blue date = scheduled."
-                  )
-                )
-                .catch((err) => setError(err.message));
+            onClick={async () => {
+              try {
+                let all = [];
+                let offset = 0;
+                let hasMoreExport = true;
+                while (hasMoreExport && all.length < 2000) {
+                  const page = await api.jobs({ status: "remaining", limit: 100, offset });
+                  all = all.concat(page.items || []);
+                  offset = all.length;
+                  hasMoreExport = Boolean(page.has_more);
+                }
+                await exportUnfinishedEventsExcel(
+                  all,
+                  `unfinished-accounts-${new Date().toISOString().slice(0, 10)}.xlsx`
+                );
+                setMessage("Excel exported: yellow = done, red = failed, blue date = scheduled.");
+              } catch (err) {
+                setError(err.message);
+              }
             }}
           >
             Export Excel
@@ -3293,7 +3341,13 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
           </div>
         )}
 
-        {displayedJobs.length === 0 && <p className="sub">No jobs match these filters.</p>}
+        {loading && jobs.length === 0 && <p className="sub">Loading schedule…</p>}
+        {!loading && jobs.length === 0 && <p className="sub">No jobs match these filters.</p>}
+        {jobs.length > 0 && (
+          <p className="sub">
+            Showing {jobs.length} of {total}
+          </p>
+        )}
         <table>
           <thead>
             <tr>
@@ -3305,14 +3359,12 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
             </tr>
           </thead>
           <tbody>
-            {displayedJobs.map((job) => {
+            {jobs.map((job) => {
               const finished = job.status === "done" || job.status === "failed";
               const responseText =
-                job.last_error || job.last_response_body || job.last_response_preview || "No response saved";
+                job.last_error || job.last_response_preview || "No response saved";
               const kind = jobKind(job);
               const task = jobTaskLabel(job);
-              const accountKey = job.batch_id || jobAccountName(job);
-              const remaining = remainingByAccount.get(accountKey) || 0;
               const viewingThisAccount = showFull && accountFilter === jobAccountName(job);
               return (
                 <tr key={job.id}>
@@ -3326,9 +3378,6 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
                       {job.game_name ? `${job.game_name} · ` : ""}
                       {job.plan_name || "manual"}
                     </div>
-                    {!showFull && remaining > 1 && (
-                      <div className="sub">{remaining - 1} more remaining</div>
-                    )}
                   </td>
                   <td>
                     <span className={`kind-tag kind-${kind}`}>{task}</span>
@@ -3372,10 +3421,35 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
                             ) {
                               return;
                             }
-                            api.runNow(job.id).then(onRefresh).catch((e) => setError(e.message));
+                            api.runNow(job.id).then(reload).catch((e) => setError(e.message));
                           }}
                         >
                           Run now
+                        </button>
+                      )}
+                      {job.status === "failed" && (
+                        <button
+                          type="button"
+                          className="btn btn-run"
+                          onClick={async () => {
+                            if (
+                              !(await confirmAction(`Resend failed job "${job.name}"?`, {
+                                title: "Resend request",
+                                confirmLabel: "Resend",
+                              }))
+                            ) {
+                              return;
+                            }
+                            try {
+                              await api.runNow(job.id);
+                              setMessage(`Resent ${job.name}`);
+                              await reload();
+                            } catch (e) {
+                              setError(e.message);
+                            }
+                          }}
+                        >
+                          Resend
                         </button>
                       )}
                       <button
@@ -3394,7 +3468,7 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
                             .deleteJob(job.id)
                             .then(() => {
                               setMessage(`Deleted ${job.name}`);
-                              return onRefresh();
+                              return reload();
                             })
                             .catch((e) => setError(e.message));
                         }}
@@ -3408,6 +3482,19 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
             })}
           </tbody>
         </table>
+
+        {hasMore && (
+          <div className="actions" style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              className="btn"
+              disabled={loadingMore}
+              onClick={() => loadPage({ offset: jobs.length, append: true }).catch(() => {})}
+            >
+              {loadingMore ? "Loading…" : "Show more"}
+            </button>
+          </div>
+        )}
 
         {accountDetails && (
           <div className="account-details">
@@ -3441,7 +3528,7 @@ function ScheduledJobsPage({ jobs, games, onRefresh, setError, setMessage }) {
               <div>
                 <div className="sub">Jobs</div>
                 <div>
-                  {accountDetails.remaining} remaining · {accountDetails.total} total
+                  {accountDetails.remaining} matching · showing {jobs.length}
                 </div>
               </div>
             </div>
@@ -4187,15 +4274,101 @@ function HistoryPage({ games }) {
   const [statusFilter, setStatusFilter] = useState("");
   const [dateFilter, setDateFilter] = useState("today");
   const [open, setOpen] = useState(null);
+  const [openDetail, setOpenDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [resendingId, setResendingId] = useState(null);
+  const runsLenRef = useRef(0);
+  runsLenRef.current = runs.length;
 
-  const loadRuns = async () => {
-    const [list, accountList] = await Promise.all([
-      api.runs({ gameId: gameId || undefined, account: account || undefined }),
-      api.runAccounts(),
-    ]);
-    setRuns(list);
-    setAccounts(accountList);
+  const historyQuery = useMemo(() => {
+    const bounds = dateFilterBounds(dateFilter);
+    return {
+      gameId: gameId || undefined,
+      account: account || undefined,
+      kind: kindFilter || undefined,
+      result: statusFilter || undefined,
+      dateFrom: bounds.dateFrom,
+      dateTo: bounds.dateTo,
+    };
+  }, [gameId, account, kindFilter, statusFilter, dateFilter]);
+
+  const loadRuns = async ({ silent = false, append = false, offset = 0, limit = PAGE_SIZE } = {}) => {
+    if (!silent) {
+      if (append) setLoadingMore(true);
+      else setListLoading(true);
+    }
+    try {
+      const [page, accountList] = await Promise.all([
+        api.runs({
+          ...historyQuery,
+          limit,
+          offset,
+        }),
+        append ? Promise.resolve(null) : api.runAccounts(),
+      ]);
+      const items = page.items || (Array.isArray(page) ? page : []);
+      setRuns((prev) => (append ? [...prev, ...items] : items));
+      setTotal(page.total != null ? page.total : items.length);
+      setHasMore(Boolean(page.has_more));
+      if (accountList) setAccounts(accountList);
+    } finally {
+      if (!silent) {
+        setListLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  };
+
+  const openRun = async (runId) => {
+    if (open === runId) {
+      setOpen(null);
+      setOpenDetail(null);
+      return;
+    }
+    setOpen(runId);
+    setOpenDetail(null);
+    setDetailLoading(true);
+    setError("");
+    try {
+      setOpenDetail(await api.runDetail(runId));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const resendRun = async (run) => {
+    if (!run?.job_id) {
+      setError("Cannot resend — job is missing.");
+      return;
+    }
+    if (
+      !(await confirmAction(`Resend failed request for "${run.job_name || run.account_name}"?`, {
+        title: "Resend request",
+        confirmLabel: "Resend",
+      }))
+    ) {
+      return;
+    }
+    setError("");
+    setMessage("");
+    setResendingId(run.id);
+    try {
+      await api.runNow(run.job_id);
+      setMessage(`Resent ${run.job_name || "request"}`);
+      await loadRuns();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setResendingId(null);
+    }
   };
 
   useEffect(() => {
@@ -4204,37 +4377,25 @@ function HistoryPage({ games }) {
   }, [searchParams]);
 
   useEffect(() => {
-    loadRuns().catch((err) => setError(err.message));
-  }, [gameId, account]);
+    loadRuns({ offset: 0 }).catch((err) => setError(err.message));
+  }, [historyQuery]);
 
   useEffect(() => {
     const tick = () => {
       if (document.visibilityState === "hidden") return;
-      loadRuns().catch(() => {});
+      const keep = Math.max(PAGE_SIZE, runsLenRef.current || PAGE_SIZE);
+      loadRuns({ silent: true, offset: 0, limit: keep }).catch(() => {});
     };
     const id = window.setInterval(tick, 5000);
     return () => window.clearInterval(id);
-  }, [gameId, account]);
+  }, [historyQuery]);
 
   const accountOptions = useMemo(
     () => accounts.map((name) => ({ value: name, label: name })),
     [accounts]
   );
   const gameOptions = useMemo(() => gameSelectOptions(games), [games]);
-  const filteredRuns = useMemo(
-    () =>
-      runs.filter((run) => {
-        if (!matchesDateFilter(run.started_at, dateFilter)) return false;
-        if (kindFilter) {
-          const kind = run.request_kind || shortEndpoint(run.request_url || run.url) || "";
-          if (kind !== kindFilter) return false;
-        }
-        if (statusFilter === "ok" && !run.ok) return false;
-        if (statusFilter === "failed" && run.ok) return false;
-        return true;
-      }),
-    [runs, dateFilter, kindFilter, statusFilter]
-  );
+  const filteredRuns = runs;
   const hasFilters = Boolean(
     gameId || account || kindFilter || statusFilter || (dateFilter && dateFilter !== "all")
   );
@@ -4263,6 +4424,7 @@ function HistoryPage({ games }) {
       </div>
       <div className="panel-body">
         {error && <p className="error">{error}</p>}
+        {message && <p className="banner ok">{message}</p>}
         <div className="filters">
           <SearchableSelect
             label="Account"
@@ -4318,7 +4480,15 @@ function HistoryPage({ games }) {
           </div>
         )}
 
-        {filteredRuns.length === 0 && <p className="sub">No runs match these filters.</p>}
+        {listLoading && runs.length === 0 && <p className="sub">Loading history…</p>}
+        {!listLoading && filteredRuns.length === 0 && (
+          <p className="sub">No runs match these filters.</p>
+        )}
+        {runs.length > 0 && (
+          <p className="sub">
+            Showing {runs.length} of {total}
+          </p>
+        )}
         <table className="history-table">
           <thead>
             <tr>
@@ -4328,6 +4498,7 @@ function HistoryPage({ games }) {
               <th>Started</th>
               <th>Result</th>
               <th>Status code</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -4335,17 +4506,18 @@ function HistoryPage({ games }) {
               const kind = run.request_kind || shortEndpoint(run.request_url || run.url) || "request";
               const task = jobTaskLabel(run);
               const isOpen = open === run.id;
-              const requestHeaders = run.request_headers
-                ? JSON.stringify(run.request_headers, null, 2)
+              const detail = isOpen && openDetail?.id === run.id ? openDetail : null;
+              const requestHeaders = detail?.request_headers
+                ? JSON.stringify(detail.request_headers, null, 2)
                 : "";
-              const responseHeaders = run.response_headers
-                ? JSON.stringify(run.response_headers, null, 2)
+              const responseHeaders = detail?.response_headers
+                ? JSON.stringify(detail.response_headers, null, 2)
                 : "";
               return (
                 <Fragment key={run.id}>
                   <tr
                     className={`history-row ${isOpen ? "open" : ""}`}
-                    onClick={() => setOpen(isOpen ? null : run.id)}
+                    onClick={() => openRun(run.id).catch(() => {})}
                   >
                     <td>
                       <CopyableAccount value={run.account_name || "—"} setError={setError} />
@@ -4363,10 +4535,25 @@ function HistoryPage({ games }) {
                       </span>
                     </td>
                     <td>{run.status_code != null ? run.status_code : run.error || "—"}</td>
+                    <td>
+                      {!run.ok && run.job_id ? (
+                        <button
+                          type="button"
+                          className="btn btn-run"
+                          disabled={resendingId === run.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            resendRun(run).catch(() => {});
+                          }}
+                        >
+                          {resendingId === run.id ? "Resending…" : "Resend"}
+                        </button>
+                      ) : null}
+                    </td>
                   </tr>
                   {isOpen && (
                     <tr className="history-expand-row">
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         <div className="history-detail inline">
                           <div className="history-detail-head">
                             <div>
@@ -4377,35 +4564,58 @@ function HistoryPage({ games }) {
                                 {run.game_name || "no game"} · {run.account_name || "no account"}
                               </div>
                             </div>
-                            <button
-                              type="button"
-                              className="btn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOpen(null);
-                              }}
-                            >
-                              Close
-                            </button>
+                            <div className="actions tight">
+                              {!run.ok && run.job_id ? (
+                                <button
+                                  type="button"
+                                  className="btn btn-run"
+                                  disabled={resendingId === run.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    resendRun(run).catch(() => {});
+                                  }}
+                                >
+                                  {resendingId === run.id ? "Resending…" : "Resend"}
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpen(null);
+                                  setOpenDetail(null);
+                                }}
+                              >
+                                Close
+                              </button>
+                            </div>
                           </div>
-                          {run.error && (
+                          {detailLoading && !detail && <p className="sub">Loading details…</p>}
+                          {detail?.error && (
                             <>
                               <h4>Error</h4>
-                              <pre>{run.error}</pre>
+                              <pre>{detail.error}</pre>
                             </>
                           )}
-                          <h4>Request</h4>
-                          <div className="sub">
-                            {run.request_method || "?"} {run.request_url || run.url || ""}
-                          </div>
-                          <pre>{requestHeaders || "No request headers saved"}</pre>
-                          <pre className="response-full">{run.request_body || "No request body"}</pre>
-                          <h4>Response headers</h4>
-                          <pre>{responseHeaders || "No response headers saved"}</pre>
-                          <h4>Full response body</h4>
-                          <pre className="response-full">
-                            {run.response_body || run.response_preview || "No body"}
-                          </pre>
+                          {detail && (
+                            <>
+                              <h4>Request</h4>
+                              <div className="sub">
+                                {detail.request_method || "?"} {detail.request_url || detail.url || ""}
+                              </div>
+                              <pre>{requestHeaders || "No request headers saved"}</pre>
+                              <pre className="response-full">
+                                {detail.request_body || "No request body"}
+                              </pre>
+                              <h4>Response headers</h4>
+                              <pre>{responseHeaders || "No response headers saved"}</pre>
+                              <h4>Full response body</h4>
+                              <pre className="response-full">
+                                {detail.response_body || detail.response_preview || "No body"}
+                              </pre>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -4415,6 +4625,21 @@ function HistoryPage({ games }) {
             })}
           </tbody>
         </table>
+
+        {hasMore && (
+          <div className="actions" style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              className="btn"
+              disabled={loadingMore}
+              onClick={() =>
+                loadRuns({ append: true, offset: runs.length }).catch((err) => setError(err.message))
+              }
+            >
+              {loadingMore ? "Loading…" : "Show more"}
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );

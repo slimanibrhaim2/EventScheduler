@@ -6,6 +6,9 @@ const { notifyJobFailure, maybeNotifyBatchFinished } = require("./telegram");
 const { deleteJobsAndOrphanProxies } = require("./cleanupFinished");
 
 const BODY_LIMIT = 1_000_000;
+/** Total send attempts for proxy/connection failures before marking the job failed. */
+const PROXY_MAX_ATTEMPTS = 3;
+const PROXY_RETRY_DELAY_MS = 2000;
 
 function asText(data) {
   if (data == null) return "";
@@ -24,6 +27,49 @@ function storeBody(data) {
   return `${text.slice(0, BODY_LIMIT)}\n\n… truncated after ${BODY_LIMIT} characters`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Only these proxy/connection errors are retried (up to PROXY_MAX_ATTEMPTS).
+ * Anything else fails immediately and is stored once.
+ */
+function isRetryableProxyError(err) {
+  if (!err) return false;
+  const message = String(err.message || err || "").toLowerCase();
+
+  return (
+    /timeout of \d+ms exceeded/.test(message) ||
+    message.includes("socket hang up") ||
+    message.includes("client network socket disconnected before secure tls connection was established") ||
+    (message.includes("hostname/ip does not match certificate's altnames") &&
+      message.includes("is not in the cert's altnames"))
+  );
+}
+
+async function insertJobRun(job, fields) {
+  await query(
+    `INSERT INTO job_runs
+      (job_id, request_method, request_url, request_headers, request_body,
+       finished_at, ok, status_code, response_preview, response_body, response_headers, error)
+     VALUES ($1, $2, $3, $4::jsonb, $5, NOW(), $6, $7, $8, $9, $10::jsonb, $11)`,
+    [
+      job.id,
+      job.method,
+      job.url,
+      JSON.stringify(job.headers || {}),
+      job.body || null,
+      fields.ok,
+      fields.statusCode ?? null,
+      fields.preview ?? null,
+      fields.body ?? null,
+      JSON.stringify(fields.headers || {}),
+      fields.error ?? null,
+    ]
+  );
+}
+
 async function loadProxy(job) {
   if (!job.proxy_id) return null;
   const result = await query(
@@ -33,78 +79,89 @@ async function loadProxy(job) {
   return result.rows[0] || null;
 }
 
+async function sendJobRequest(job, proxy) {
+  return axios({
+    method: job.method,
+    url: job.url,
+    headers: job.headers || {},
+    data: job.body || undefined,
+    timeout: 30000,
+    validateStatus: () => true,
+    responseType: "text",
+    transformResponse: [(data) => data],
+    ...axiosProxyConfig(proxy),
+  });
+}
+
 async function executeJob(job) {
-  const started = await query(
-    `INSERT INTO job_runs
-      (job_id, request_method, request_url, request_headers, request_body)
-     VALUES ($1, $2, $3, $4::jsonb, $5)
-     RETURNING id`,
-    [
-      job.id,
-      job.method,
-      job.url,
-      JSON.stringify(job.headers || {}),
-      job.body || null,
-    ]
-  );
-  const runId = started.rows[0].id;
   const proxy = await loadProxy(job);
+  let lastError = null;
+  let attempts = 0;
 
   try {
-    const response = await axios({
-      method: job.method,
-      url: job.url,
-      headers: job.headers || {},
-      data: job.body || undefined,
-      timeout: 30000,
-      validateStatus: () => true,
-      responseType: "text",
-      transformResponse: [(data) => data],
-      ...axiosProxyConfig(proxy),
-    });
+    while (attempts < PROXY_MAX_ATTEMPTS) {
+      attempts += 1;
+      try {
+        const response = await sendJobRequest(job, proxy);
+        const body = storeBody(response.data);
+        const headers = response.headers || {};
+        const ok = response.status >= 200 && response.status < 400;
 
-    const body = storeBody(response.data);
-    const headers = response.headers || {};
-    const ok = response.status >= 200 && response.status < 400;
-
-    await query(
-      `UPDATE job_runs
-       SET finished_at = NOW(),
-           ok = $2,
-           status_code = $3,
-           response_preview = $4,
-           response_body = $5,
-           response_headers = $6::jsonb,
-           error = $7
-       WHERE id = $1`,
-      [
-        runId,
-        ok,
-        response.status,
-        body.slice(0, 500),
-        body,
-        JSON.stringify(headers),
-        ok ? null : `HTTP ${response.status}`,
-      ]
-    );
-    await query(
-      `UPDATE jobs SET status = $2, updated_at = NOW() WHERE id = $1`,
-      [job.id, ok ? "done" : "failed"]
-    );
-    if (!ok) {
-      await notifyJobFailure(job, `HTTP ${response.status}`, {
-        statusCode: response.status,
-        responseBody: body,
-      });
+        // One history row only — after the final successful send (retries are not stored).
+        await insertJobRun(job, {
+          ok,
+          statusCode: response.status,
+          preview: body.slice(0, 500),
+          body,
+          headers,
+          error: ok ? null : `HTTP ${response.status}`,
+        });
+        await query(
+          `UPDATE jobs SET status = $2, updated_at = NOW() WHERE id = $1`,
+          [job.id, ok ? "done" : "failed"]
+        );
+        if (!ok) {
+          await notifyJobFailure(job, `HTTP ${response.status}`, {
+            statusCode: response.status,
+            responseBody: body,
+          });
+        }
+        await maybeNotifyBatchFinished(job);
+        return;
+      } catch (err) {
+        lastError = err;
+        if (!isRetryableProxyError(err) || attempts >= PROXY_MAX_ATTEMPTS) {
+          break;
+        }
+        console.warn(
+          `job ${job.id} proxy error (attempt ${attempts}/${PROXY_MAX_ATTEMPTS}): ${err.message} — retrying (not stored yet)`
+        );
+        await sleep(PROXY_RETRY_DELAY_MS);
+      }
     }
+
+    const detail = lastError?.message || "Request failed";
+    const errorText =
+      attempts > 1 ? `${detail} (failed after ${attempts} attempts)` : detail;
+
+    // Store only the final failed result (after retries, if any).
+    await insertJobRun(job, {
+      ok: false,
+      error: errorText,
+    });
+    await query(
+      `UPDATE jobs SET status = 'failed', updated_at = NOW() WHERE id = $1`,
+      [job.id]
+    );
+    await notifyJobFailure(job, errorText, {
+      responseBody: lastError?.response?.data || errorText,
+    });
     await maybeNotifyBatchFinished(job);
   } catch (err) {
-    await query(
-      `UPDATE job_runs
-       SET finished_at = NOW(), ok = false, error = $2
-       WHERE id = $1`,
-      [runId, err.message]
-    );
+    await insertJobRun(job, {
+      ok: false,
+      error: err.message,
+    });
     await query(
       `UPDATE jobs SET status = 'failed', updated_at = NOW() WHERE id = $1`,
       [job.id]
@@ -195,4 +252,10 @@ function startScheduler() {
   console.log("scheduler started (every minute)");
 }
 
-module.exports = { startScheduler, executeJob, purgeFinishedAccounts };
+module.exports = {
+  startScheduler,
+  executeJob,
+  purgeFinishedAccounts,
+  isRetryableProxyError,
+  PROXY_MAX_ATTEMPTS,
+};

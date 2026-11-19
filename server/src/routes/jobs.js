@@ -84,38 +84,204 @@ async function insertJob({
   return result.rows[0];
 }
 
-router.get("/", async (req, res) => {
+function clampPage(value, fallback, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(0, Math.floor(n)));
+}
+
+function localDayBounds(filter) {
+  if (!filter || filter === "all") return null;
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (filter === "today") {
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { start, end };
+  }
+  if (filter === "yesterday") {
+    const end = new Date(start);
+    const begin = new Date(start);
+    begin.setDate(begin.getDate() - 1);
+    return { start: begin, end };
+  }
+  if (filter === "7d") {
+    const begin = new Date(start);
+    begin.setDate(begin.getDate() - 6);
+    return { start: begin, end: null };
+  }
+  return null;
+}
+
+/** Prefer explicit ISO bounds from the client (correct local timezone). */
+function resolveDateBounds(query) {
+  if (query.date_from || query.date_to) {
+    const start = query.date_from ? new Date(String(query.date_from)) : null;
+    const end = query.date_to ? new Date(String(query.date_to)) : null;
+    return {
+      start: start && !Number.isNaN(start.getTime()) ? start : null,
+      end: end && !Number.isNaN(end.getTime()) ? end : null,
+    };
+  }
+  return localDayBounds(query.date);
+}
+
+router.get("/account-names", async (req, res) => {
   const result = await query(
-    `SELECT j.*, p.name AS proxy_name, g.name AS game_name, pl.name AS plan_name,
-       COALESCE(
-         j.request_kind,
-         CASE
-           WHEN j.url ILIKE '%/session%' THEN 'session'
-           WHEN j.url ILIKE '%/event%' THEN 'event'
-           ELSE NULL
-         END
-       ) AS request_kind,
-       latest.status_code AS last_status_code,
-       latest.ok AS last_ok,
-       latest.error AS last_error,
-       latest.response_body AS last_response_body,
-       latest.response_preview AS last_response_preview
-     FROM jobs j
-     LEFT JOIN proxies p ON p.id = j.proxy_id
-     LEFT JOIN games g ON g.id = j.game_id
-     LEFT JOIN plans pl ON pl.id = j.plan_id
-     LEFT JOIN LATERAL (
-       SELECT status_code, ok, error, response_body, response_preview
-       FROM job_runs
-       WHERE job_id = j.id
-       ORDER BY started_at DESC
-       LIMIT 1
-     ) latest ON TRUE
-     WHERE j.user_id = $1
-     ORDER BY j.run_at DESC`,
+    `SELECT DISTINCT SPLIT_PART(name, ' · ', 1) AS account_name
+     FROM jobs
+     WHERE user_id = $1
+       AND name IS NOT NULL
+       AND name <> ''
+       AND SPLIT_PART(name, ' · ', 1) <> ''
+     ORDER BY account_name`,
     [req.appUser.id]
   );
-  res.json(result.rows);
+  res.json(result.rows.map((row) => row.account_name).filter(Boolean));
+});
+
+router.get("/", async (req, res) => {
+  // Paginated light list — no full response bodies. Use ?limit=&offset= + filters.
+  const limit = clampPage(req.query.limit, 50, 100) || 50;
+  const offset = clampPage(req.query.offset, 0, 1_000_000);
+  const view = String(req.query.view || "");
+  const params = [req.appUser.id];
+  const where = ["j.user_id = $1"];
+
+  if (req.query.game_id) {
+    params.push(Number(req.query.game_id));
+    where.push(`j.game_id = $${params.length}`);
+  }
+  if (req.query.account) {
+    params.push(String(req.query.account));
+    where.push(`SPLIT_PART(j.name, ' · ', 1) = $${params.length}`);
+  }
+  if (req.query.kind === "session" || req.query.kind === "event") {
+    params.push(req.query.kind);
+    where.push(`COALESCE(
+      j.request_kind,
+      CASE
+        WHEN j.url ILIKE '%/session%' THEN 'session'
+        WHEN j.url ILIKE '%/event%' THEN 'event'
+        ELSE NULL
+      END
+    ) = $${params.length}`);
+  }
+
+  const status = String(req.query.status || "remaining");
+  if (status === "pending" || status === "running" || status === "done" || status === "failed") {
+    params.push(status);
+    where.push(`j.status = $${params.length}`);
+  } else if (status === "remaining" || status === "") {
+    where.push(`j.status IN ('pending', 'running')`);
+  }
+  // status=all → no status filter
+
+  const bounds = resolveDateBounds(req.query);
+  if (bounds?.start) {
+    params.push(bounds.start.toISOString());
+    where.push(`j.run_at >= $${params.length}::timestamptz`);
+  }
+  if (bounds?.end) {
+    params.push(bounds.end.toISOString());
+    where.push(`j.run_at < $${params.length}::timestamptz`);
+  }
+
+  const whereSql = where.join(" AND ");
+  const selectCols = `
+    j.id, j.name, j.method, j.url, j.run_at, j.status,
+    j.proxy_id, j.user_id, j.game_id, j.plan_id, j.plan_step_id, j.batch_id,
+    j.request_kind, j.created_at, j.updated_at,
+    p.name AS proxy_name, g.name AS game_name, pl.name AS plan_name,
+    COALESCE(
+      j.request_kind,
+      CASE
+        WHEN j.url ILIKE '%/session%' THEN 'session'
+        WHEN j.url ILIKE '%/event%' THEN 'event'
+        ELSE NULL
+      END
+    ) AS request_kind,
+    latest.status_code AS last_status_code,
+    latest.ok AS last_ok,
+    latest.error AS last_error,
+    latest.response_preview AS last_response_preview
+  `;
+  const joins = `
+    LEFT JOIN proxies p ON p.id = j.proxy_id
+    LEFT JOIN games g ON g.id = j.game_id
+    LEFT JOIN plans pl ON pl.id = j.plan_id
+    LEFT JOIN LATERAL (
+      SELECT status_code, ok, error, response_preview
+      FROM job_runs
+      WHERE job_id = j.id
+      ORDER BY started_at DESC
+      LIMIT 1
+    ) latest ON TRUE
+  `;
+
+  let items;
+  let total;
+
+  if (view === "next") {
+    // One next pending/running job per account (like Gmail inbox grouping).
+    const countResult = await query(
+      `SELECT COUNT(*)::int AS total FROM (
+         SELECT 1
+         FROM jobs j
+         WHERE ${whereSql}
+         GROUP BY COALESCE(j.batch_id::text, LOWER(SPLIT_PART(j.name, ' · ', 1)))
+       ) t`,
+      params
+    );
+    total = countResult.rows[0]?.total || 0;
+
+    const limitParam = params.length + 1;
+    const offsetParam = params.length + 2;
+    const result = await query(
+      `SELECT * FROM (
+         SELECT ${selectCols},
+           ROW_NUMBER() OVER (
+             PARTITION BY COALESCE(j.batch_id::text, LOWER(SPLIT_PART(j.name, ' · ', 1)))
+             ORDER BY j.run_at ASC, j.id ASC
+           ) AS rn
+         FROM jobs j
+         ${joins}
+         WHERE ${whereSql}
+       ) ranked
+       WHERE ranked.rn = 1
+       ORDER BY ranked.run_at ASC, ranked.id ASC
+       LIMIT $${limitParam} OFFSET $${offsetParam}`,
+      [...params, limit, offset]
+    );
+    items = result.rows.map(({ rn, ...row }) => row);
+  } else {
+    const countResult = await query(
+      `SELECT COUNT(*)::int AS total FROM jobs j WHERE ${whereSql}`,
+      params
+    );
+    total = countResult.rows[0]?.total || 0;
+
+    const limitParam = params.length + 1;
+    const offsetParam = params.length + 2;
+    const result = await query(
+      `SELECT ${selectCols}
+       FROM jobs j
+       ${joins}
+       WHERE ${whereSql}
+       ORDER BY j.run_at ASC, j.id ASC
+       LIMIT $${limitParam} OFFSET $${offsetParam}`,
+      [...params, limit, offset]
+    );
+    items = result.rows;
+  }
+
+  res.json({
+    items,
+    total,
+    limit,
+    offset,
+    has_more: offset + items.length < total,
+  });
 });
 
 router.post("/parse", (req, res) => {
